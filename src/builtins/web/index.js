@@ -58,7 +58,7 @@ export function activateWeb(framework,{read=readPublic,download=safeDownload,now
   const bytes=await download(row.imageUrl,{signal,maxBytes:api.getConfig().imageMaxMB*1024*1024});
   const resource=await api.putResource(bytes,c,{purpose:'image',name:row.title});saved.rows.delete(a.imageId);if(!saved.rows.size)candidates.delete(candidateKey(c));
   const sent=await api.invoke('qq.image.send',{resourceId:resource.id},c,signal);
-  return {imageId:a.imageId,title:row.title,sourceUrl:row.sourceUrl,sent,instruction:'可以说明已发送图片并附来源网页；图片内容与来源真实性仍需结合来源核实。'};
+  return {imageId:a.imageId,title:row.title,sourceUrl:row.sourceUrl,sent,resourceId:resource.id,instruction:'可以说明已发送图片并附来源网页；图片内容与来源真实性仍需结合来源核实。想把这张收进表情库时，把 resourceId 交给表情包的 save。'};
  }));
  return api;
 }

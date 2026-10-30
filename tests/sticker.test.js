@@ -123,6 +123,15 @@ test('删除后不能再发送',async t=>{
  assert.equal(x.stickers.stats().count,0);
 });
 
+test('联网搜到并发出后，可以用资源编号收进表情库',async t=>{
+ const x=await setup(t),c=x.context();
+ const saved=await x.actions.invoke('plugin.qq-sticker.save',{resourceId:'res-from-web',name:'网页图',tags:['梗']},c);
+ assert.equal(saved.ok,true);
+ assert.equal(saved.sticker.name,'网页图');
+ assert.deepEqual(saved.sticker.tags,['梗']);
+ assert.equal(x.invokes.some(i=>i.id==='qq.media.receive'),false,'用资源编号时不应再去消息里取图');
+});
+
 test('非图片内容会被拒绝收藏',async t=>{
  const x=await setup(t,{bytes:Buffer.from('not an image at all')}),c=x.context();
  await assert.rejects(save(x,c),/只能收藏/);

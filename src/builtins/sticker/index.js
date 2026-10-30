@@ -26,7 +26,7 @@ export const manifest = {
 const schema = (properties, required = []) => ({type: 'object', properties, required, additionalProperties: false});
 // 哪些参数是必填，逐动作声明；不写就让模型自由省略。
 const REQUIRED = {
-  save: ['messageId'], steal: ['messageId'], list: [], send: ['id'], explain: [], remove: ['id']
+  save: [], steal: [], list: [], send: ['id'], explain: [], remove: ['id']
 };
 
 export function activateSticker(framework, {stickers, readResource, now = () => Date.now()} = {}) {
@@ -43,11 +43,17 @@ export function activateSticker(framework, {stickers, readResource, now = () => 
   };
 
   const remember = async (a, c, signal, source) => {
-    if (!a.messageId) api.reject('请指定要收藏哪条消息里的表情');
+    if (!a.messageId && !a.resourceId) api.reject('请指定要收藏哪条消息里的表情，或联网查资料刚发出去的那张图的资源编号');
     budget(c);
-    // 核心动作会校验这条消息确实属于当前聊天，插件拿不到任意 URL。
-    const resource = await api.invoke('qq.media.receive', {messageId: String(a.messageId), index: a.index ?? 0}, c, signal);
-    const bytes = await readResource(resource.id, c);
+    let bytes;
+    if (a.resourceId) {
+      // 兼容"先联网搜图发出去、再收进表情库"：资源由联网查资料包创建，仍在当前聊天内有效。
+      bytes = await readResource(String(a.resourceId), c);
+    } else {
+      // 核心动作会校验这条消息确实属于当前聊天，插件拿不到任意 URL。
+      const resource = await api.invoke('qq.media.receive', {messageId: String(a.messageId), index: a.index ?? 0}, c, signal);
+      bytes = await readResource(resource.id, c);
+    }
     const {sticker, deduped} = await stickers.save({
       bytes, name: a.name, tags: a.tags, usage: a.usage, source, context: c
     });
@@ -64,6 +70,7 @@ export function activateSticker(framework, {stickers, readResource, now = () => 
     mutating: true, timeoutMs: 20000,
     parameters: schema({
       messageId: {type: 'string', maxLength: 60, description: '包含表情的那条消息 ID'},
+      resourceId: {type: 'string', maxLength: 60, description: '联网查资料刚发出去的图片资源编号，与 messageId 二选一'},
       index: {type: 'integer', minimum: 0, maximum: 19},
       name: {type: 'string', maxLength: 40},
       tags: {type: 'array', maxItems: 5, items: {type: 'string', maxLength: 20}},
@@ -76,6 +83,7 @@ export function activateSticker(framework, {stickers, readResource, now = () => 
     mutating: true, timeoutMs: 20000,
     parameters: schema({
       messageId: {type: 'string', maxLength: 60, description: '包含表情的那条消息 ID'},
+      resourceId: {type: 'string', maxLength: 60, description: '联网查资料刚发出去的图片资源编号，与 messageId 二选一'},
       index: {type: 'integer', minimum: 0, maximum: 19},
       name: {type: 'string', maxLength: 40},
       tags: {type: 'array', maxItems: 5, items: {type: 'string', maxLength: 20}},

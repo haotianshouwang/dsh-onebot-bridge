@@ -53,6 +53,8 @@ export async function apply(ctx,config) {
   activateSticker(sdk.facade(),{stickers,readResource:async(id,context)=>{
    const row=media.items.get(String(id));
    if(!row||row.key!==context.key)throw new Error('表情资源不存在、已过期或不属于当前聊天');
+   // 只允许表情包自己和联网查资料包创建的资源：这是"搜到图再收进库"的既有链路。
+   if(!['qq-sticker','qq-web'].includes(row.plugin))throw new Error('该资源不能收进表情库');
    return readFile(path.join(media.dir,row.id+'.bin'));
   }});
   const uninstaller=new Uninstaller(store,{builtins,extensions,beforeChange:async()=>{invalidate(store);await native.revoke();}});
