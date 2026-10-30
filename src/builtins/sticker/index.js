@@ -8,7 +8,8 @@
 export const manifest = {
   id: 'qq-sticker', name: '表情包', version: '1.0.0', bundled: true,
   description: '收藏群里的表情包、按标签检索、发送，并识别表情的用途或联网查它的含义；只用公开搜索，不访问本机文件。',
-  dependencies: {framework: '>=0.8.0'}, configVersion: 1,
+  dependencies: {framework: '>=0.8.0'}, configVersion: 2,
+  configMigrations: [{to: 2, remove: ['savePerDay'], defaults: {autoSaveSent: false, autoSaveIncoming: false}}],
   capabilities: ['actions', 'resources'],
   configSchema: {
     listLimit: {type: 'number', title: '检索返回数量', default: 8, min: 1, max: 20, integer: true},

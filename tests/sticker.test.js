@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
-import {Store} from '../src/host/store.js';import {Permissions} from '../src/core/permissions.js';import {Actions} from '../src/core/actions.js';import {Events} from '../src/core/events.js';import {Media} from '../src/core/media.js';import {PluginSDK} from '../src/sdk.js';import {StickerStore} from '../src/core/stickers.js';import {activateSticker} from '../src/builtins/sticker/index.js';
+import {Store} from '../src/host/store.js';import {Permissions} from '../src/core/permissions.js';import {Actions} from '../src/core/actions.js';import {Events} from '../src/core/events.js';import {Media} from '../src/core/media.js';import {PluginSDK} from '../src/sdk.js';import {StickerStore} from '../src/core/stickers.js';import {activateSticker,manifest} from '../src/builtins/sticker/index.js';import {migrateConfig} from '../src/core/package-model.js';
 
 const bot='10000002',owner='10000001',other='12345678',group='88888',key=bot+':group:'+group;
 const message=(extra={})=>({bot,user:owner,kind:'group',peer:group,key,id:'m1',...extra});
@@ -128,4 +128,12 @@ test('非图片内容会被拒绝收藏',async t=>{
  const x=await setup(t,{bytes:Buffer.from('not an image at all')}),c=x.context();
  await assert.rejects(save(x,c),/只能收藏/);
  assert.equal(x.stickers.stats().count,0);
+});
+test('旧配置升级到 v2：去掉每日配额并补上自动收藏默认值',()=>{
+ const old={configVersion:1,manifest:{...manifest,configVersion:1},config:{listLimit:8,savePerDay:60,meaningEnabled:true,maxStickers:300}};
+ const config=migrateConfig(old,manifest);
+ assert.equal(config.autoSaveSent,false);
+ assert.equal(config.autoSaveIncoming,false);
+ assert.equal(config.savePerDay,undefined,'已废弃的每日配额字段应被移除');
+ assert.equal(config.maxStickers,300);
 });
