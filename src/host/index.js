@@ -19,6 +19,8 @@ import {createQzoneBackend} from '../builtins/qzone/backend.js';
 import {activateWeb} from '../builtins/web/index.js';
 import {StickerStore} from '../core/stickers.js';
 import {activateSticker} from '../builtins/sticker/index.js';
+import {createStickerAutoSave} from '../builtins/sticker/auto.js';
+import {safeDownload} from '../core/media.js';
 import {readFile} from 'node:fs/promises';
 import {activateGroupMembers} from '../builtins/group-members/index.js';
 import {validateProfile,chatSettings} from '../session/chat-profile.js';
@@ -47,19 +49,37 @@ export async function apply(ctx,config) {
   const market=new Market(store,extensions,path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../examples'),log);
   router=new Router(store,native,extensions,log,{permissions,events,actions,builtins});
   activateGroupMembers(sdk.facade());
-  activateWeb(sdk.facade());
-  activateQzone(sdk.facade(),createQzoneBackend(()=>bot));
   const stickers=await new StickerStore(store.dir).open();
-  activateSticker(sdk.facade(),{stickers,readResource:async(id,context)=>{
+  // 只允许表情包自己和联网查资料包创建的资源：这是"搜到图再收进库"的既有链路。
+  const readStickerResource=async(id,context)=>{
    const row=media.items.get(String(id));
    if(!row||row.key!==context.key)throw new Error('表情资源不存在、已过期或不属于当前聊天');
-   // 只允许表情包自己和联网查资料包创建的资源：这是"搜到图再收进库"的既有链路。
    if(!['qq-sticker','qq-web'].includes(row.plugin))throw new Error('该资源不能收进表情库');
    return readFile(path.join(media.dir,row.id+'.bin'));
-  }});
+  };
+  activateSticker(sdk.facade(),{stickers,readResource:readStickerResource});
+  const stickerAuto=createStickerAutoSave({
+   stickers,readResource:readStickerResource,log,
+   scope:()=>{const item=store.data.framework.nativePackages['qq-sticker'];return {config:item?.config||{},scope:item?.scope||null};},
+   fetchMessageBytes:async(message,index)=>{
+    const observed=events.observed.get(message.bot+':'+message.id);
+    const item=(observed?.media||[]).filter(entry=>entry.type==='image')[index];
+    if(!item)return null;
+    let url=item.url;
+    if(!url){const data=await bot?.request('get_image',{file:item.file},15000);url=data?.data?.url;}
+    if(typeof url!=='string'||!url.startsWith('https://'))return null;
+    return safeDownload(url,{maxBytes:2*1024*1024});
+   }
+  });
+  activateWeb(sdk.facade(),{onStickerSent:(resourceId,context,meta)=>stickerAuto.fromResource(resourceId,context,meta)});
+  activateQzone(sdk.facade(),createQzoneBackend(()=>bot));
   const uninstaller=new Uninstaller(store,{builtins,extensions,beforeChange:async()=>{invalidate(store);await native.revoke();}});
   const maintenance=setInterval(()=>sdk.pruneStorage().catch(e=>log('warn',e.message)),60000);maintenance.unref?.();
-  events.subscribe('core-router',['message'],msg=>router.receive(msg));
+  events.subscribe('core-router',['message'],msg=>{
+   router.receive(msg);
+   // 自动收藏是旁路：失败只记日志，不影响消息处理。
+   if(msg.parts?.some(part=>part.type==='image'))void stickerAuto.fromMessage(msg,{actor:msg.user,peer:msg.peer,kind:msg.kind,key:msg.key}).catch(()=>{});
+  });
   events.subscribe('core-notices',['notice'],async event=>{await router.poke(event);await router.notice(event);});
   async function connect(){
     if(bot)await bot.stop();bot=new OneBot(store.data.settings,token,log);router.attach(bot);

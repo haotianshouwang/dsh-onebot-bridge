@@ -10,7 +10,7 @@ export const manifest={id:'qq-web',name:'联网查资料',version:'1.1.0',bundle
  userPerMinute:{type:'number',title:'每人每分钟查询次数',default:4,min:2,max:10,integer:true},
  perHour:{type:'number',title:'每个聊天每小时查询次数',default:80,min:10,max:300,integer:true}
 },settings:{title:'联网查资料',description:'使用必应搜索网页和图片。搜索摘要只用于找来源，事实回答需打开网页正文核实并附链接；发送图片前会重新下载并检查格式、大小和尺寸。服务限流或页面无法读取时明确报告失败。',sections:[{title:'搜索结果',fields:['maxResults','maxImages','maxChars']},{title:'图片发送',fields:['imageMaxMB']},{title:'查询限额',fields:['perMinute','userPerMinute','perHour']}]}};
-export function activateWeb(framework,{read=readPublic,download=safeDownload,now=()=>Date.now()}={}){
+export function activateWeb(framework,{read=readPublic,download=safeDownload,now=()=>Date.now(),onStickerSent}={}){
  const api=framework.registerTrustedPackage(manifest),budgets=new Map(),candidates=new Map(),candidateTtl=15*60*1000,quota=detail=>Object.assign(new Error(detail),{code:'QUOTA'});
  const candidateKey=c=>c.bot+'|'+c.key+'|'+c.actor;
  const pruneCandidates=ts=>{
@@ -58,6 +58,8 @@ export function activateWeb(framework,{read=readPublic,download=safeDownload,now
   const bytes=await download(row.imageUrl,{signal,maxBytes:api.getConfig().imageMaxMB*1024*1024});
   const resource=await api.putResource(bytes,c,{purpose:'image',name:row.title});saved.rows.delete(a.imageId);if(!saved.rows.size)candidates.delete(candidateKey(c));
   const sent=await api.invoke('qq.image.send',{resourceId:resource.id},c,signal);
+  // 自动收藏：发了图之后按资源编号收进表情库。失败不影响发送结果。
+  if(typeof onStickerSent==='function'){try{await onStickerSent(resource.id,c,{name:row.title});}catch{}}
   return {imageId:a.imageId,title:row.title,sourceUrl:row.sourceUrl,sent,resourceId:resource.id,instruction:'可以说明已发送图片并附来源网页；图片内容与来源真实性仍需结合来源核实。想把这张收进表情库时，把 resourceId 交给表情包的 save。'};
  }));
  return api;

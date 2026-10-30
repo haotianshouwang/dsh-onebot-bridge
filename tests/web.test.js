@@ -7,7 +7,7 @@ const rss='<rss><channel><item><title>官方 &amp; 文档</title><link>https://e
 const meta=value=>JSON.stringify(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const imageHtml='<html><div class="dgControl"><a class="iusc" aria-label="候选图片" m="'+meta({purl:'https://example.com/source',murl:'https://cdn.example.com/animal.png?size=large',t:'一只鲸鱼',desc:'<b>候选图片说明</b>'})+'"><img src="preview"></a><a class="iusc" m="'+meta({purl:'https://example.com/http-image',murl:'http://cdn.example.com/no.png',t:'非 HTTPS'})+'"></a></div></html>';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
-async function setupImages(t,read,download){
+async function setupImages(t,read,download,hooks={}){
  process.env.QQBOT_OWNER=owner;
  const dir=await mkdtemp(path.join(os.tmpdir(),'qq-web-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -15,7 +15,7 @@ async function setupImages(t,read,download){
  Object.assign(store.data.framework,{listenGroups:[group],listenPrivate:true,listenAllPrivate:true,enabledActions:['plugin.qq-web.search','plugin.qq-web.read','plugin.qq-web.image-search','plugin.qq-web.image-send','qq.image.send']});
  const permissions=new Permissions(store),events=new Events(store,()=>{}),media=new Media(store),actions=new Actions(store,permissions,events,media),sent=[];
  actions.attach({status:{bot},request:async(action,params)=>{sent.push({action,params});return {outcome:'confirmed',data:{message_id:9000+sent.length}};}});
- const sdk=new PluginSDK({store,permissions,events,media,actions}),api=activateWeb(sdk.facade(),{read,download});
+ const sdk=new PluginSDK({store,permissions,events,media,actions}),api=activateWeb(sdk.facade(),{read,download,...hooks});
  const item=store.data.framework.nativePackages['qq-web'];
  item.enabled=true;item.scope={private:true,allUsers:true,users:[],groups:[group]};
  t.after(()=>sdk.stop());
@@ -83,3 +83,22 @@ test('DNS private answers and redirect-to-private are blocked before connection'
 test('public redirects retain final URL and DNS is pinned; files and oversized pages are rejected',async()=>{const seen=[],p=await readPublic('https://example.com',{resolve:resolver,request:transport([{status:302,headers:{location:'/final'}},{body:'page'}],seen)});assert.equal(p.url,'https://example.com/final');let address;seen[0].opts.lookup('example.com',{},(_e,a)=>address=a);assert.equal(address,'93.184.216.34');await assert.rejects(readPublic('https://example.com',{resolve:resolver,request:transport([{headers:{'content-type':'application/octet-stream'}}])}),/文件/);await assert.rejects(readPublic('https://example.com',{resolve:resolver,maxBytes:4,request:transport([{body:'12345'}])}),/大小/);});
 
 test('room hourly and per-user minute limits are separate from owner privileges',async t=>{const x=await setup(t,async url=>({url,body:rss,contentType:'text/xml'}));x.item.config.userPerMinute=2;const c=x.permissions.issue(message(),'chat');for(let i=0;i<2;i++)await x.actions.invoke('plugin.qq-web.search',{query:'test'},c);await assert.rejects(x.actions.invoke('plugin.qq-web.search',{query:'test'},c),/用户.*上限/);x.item.config.perHour=2;const owner=x.permissions.issue(message({user:'10000001',id:'2'}),'chat');await assert.rejects(x.actions.invoke('plugin.qq-web.search',{query:'test'},owner),/小时上限/);});
+test('联网发图成功后把资源交给自动收藏，且不因收藏失败影响发送',async t=>{
+ const seen=[];
+ const x=await setupImages(t,async url=>({url,contentType:'text/html',body:imageHtml}),async()=>png,{onStickerSent:async(id,ctx,meta)=>{seen.push({id,name:meta.name});}});
+ const c=x.permissions.issue(message(),'chat'),search=await x.actions.invoke('plugin.qq-web.image-search',{query:'鲸鱼'},c);
+ for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
+ const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
+ assert.equal(sent.ok,true);
+ assert.equal(typeof sent.resourceId,'string','发图结果应带 resourceId 供表情包收藏');
+ assert.equal(seen.length,1,'发图成功应触发一次自动收藏');
+ assert.match(seen[0].name,/鲸鱼/);
+});
+
+test('自动收藏抛错时发送仍然成功',async t=>{
+ const x=await setupImages(t,async url=>({url,contentType:'text/html',body:imageHtml}),async()=>png,{onStickerSent:async()=>{throw new Error('表情库满');}});
+ const c=x.permissions.issue(message(),'chat'),search=await x.actions.invoke('plugin.qq-web.image-search',{query:'鲸鱼'},c);
+ for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
+ const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
+ assert.equal(sent.ok,true);
+});

@@ -12,14 +12,15 @@ export const manifest = {
   capabilities: ['actions', 'resources'],
   configSchema: {
     listLimit: {type: 'number', title: '检索返回数量', default: 8, min: 1, max: 20, integer: true},
-    savePerDay: {type: 'number', title: '24 小时内最多收藏张数', default: 60, min: 1, max: 300, integer: true},
+    autoSaveSent: {type: 'boolean', title: '她发出去的图自动收进库', description: '联网搜到并发出的图片，发送成功后自动收藏。默认关闭。', default: false},
+    autoSaveIncoming: {type: 'boolean', title: '群里收到的图自动收进库', description: '命中作用范围的聊天里，别人发的图片自动收藏（每个表情按内容去重）。默认关闭。', default: false},
     meaningEnabled: {type: 'boolean', title: '允许联网查表情含义', default: true},
     maxStickers: {type: 'number', title: '表情库上限（张）', default: 300, min: 10, max: 1000, integer: true}
   },
   settings: {
     title: '表情包',
-    description: '收藏当前聊天里收到的图片表情；识别用途时会把图片交给模型看，联网查含义使用必应搜索。所有动作默认只有主人可用，可在主人与权限里逐项开放。',
-    sections: [{title: '检索与限额', fields: ['listLimit', 'savePerDay', 'maxStickers']}, {title: '联网查含义', fields: ['meaningEnabled']}]
+    description: '收藏当前聊天里收到的图片表情；识别用途时会把图片交给模型看，联网查含义使用必应搜索。所有动作默认只有主人可用，可在主人与权限里逐项开放。自动收藏是系统行为，只受作用范围限制，不需要工具授权，也不设每日配额。',
+    sections: [{title: '检索与容量', fields: ['listLimit', 'maxStickers']}, {title: '自动收藏', fields: ['autoSaveSent', 'autoSaveIncoming']}, {title: '联网查含义', fields: ['meaningEnabled']}]
   }
 };
 
@@ -29,22 +30,11 @@ const REQUIRED = {
   save: [], steal: [], list: [], send: ['id'], explain: [], remove: ['id']
 };
 
-export function activateSticker(framework, {stickers, readResource, now = () => Date.now()} = {}) {
+export function activateSticker(framework, {stickers, readResource} = {}) {
   const api = framework.registerTrustedPackage(manifest);
-  const saves = new Map();
-
-  const budget = c => {
-    const config = api.getConfig(), at = now();
-    const times = (saves.get(c.actor) || []).filter(t => at - t < 86400000);
-    if (times.length >= (config.savePerDay ?? 60)) api.reject('今天收藏的表情已经够多了，明天再收');
-    times.push(at);
-    saves.set(c.actor, times);
-    if (saves.size > 500) saves.delete(saves.keys().next().value);
-  };
 
   const remember = async (a, c, signal, source) => {
     if (!a.messageId && !a.resourceId) api.reject('请指定要收藏哪条消息里的表情，或联网查资料刚发出去的那张图的资源编号');
-    budget(c);
     let bytes;
     if (a.resourceId) {
       // 兼容"先联网搜图发出去、再收进表情库"：资源由联网查资料包创建，仍在当前聊天内有效。

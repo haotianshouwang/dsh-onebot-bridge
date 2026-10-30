@@ -107,14 +107,6 @@ test('关闭联网查含义后不再发起搜索',async t=>{
  assert.equal(x.invokes.filter(i=>i.id==='plugin.qq-web.search').length,0);
 });
 
-test('收藏数量受限，超出当日额度会被拒绝',async t=>{
- const x=await setup(t),c=x.context();
- const item=x.store.data.framework.nativePackages['qq-sticker'];
- item.config={...item.config,savePerDay:1};
- await save(x,c);
- await assert.rejects(save(x,c),/够多了/);
-});
-
 test('删除后不能再发送',async t=>{
  const x=await setup(t),c=x.context();
  const saved=await save(x,c);
