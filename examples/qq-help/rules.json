@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {
+      "type": "command",
+      "match": "/帮助",
+      "reply": "{{config.text}}"
+    }
+  ]
+}

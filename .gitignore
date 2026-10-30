@@ -1,0 +1,31 @@
+# 依赖与构建产物
+node_modules/
+market-dist/
+
+# 运行期数据（绝不入库）
+state.json
+state.json.*
+state.before-*.json
+*.log
+data/
+
+# 本地配置与凭据
+.env
+.env.*
+secrets.json
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 本机专用验证工具与内部记录（依赖本机路径，不对外发布）
+scripts/*.cjs
+scripts/verify-isolation.mjs
+scripts/check-deployment.mjs
+tests/isolation-guard.test.js
+tests/deployment-drift.test.js
+docs/PRE-PROD-CHECK.md
+docs/PHASE1-ACCEPTANCE.md
+docs/COMPACTION-FIX.md

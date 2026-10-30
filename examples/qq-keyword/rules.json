@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "type": "contains",
+      "match": "在吗",
+      "reply": "{{config.response}}"
+    }
+  ],
+  "actions": [
+    {
+      "id": "reply",
+      "description": "获取关键词插件的固定回复",
+      "reply": "{{config.response}}"
+    }
+  ]
+}

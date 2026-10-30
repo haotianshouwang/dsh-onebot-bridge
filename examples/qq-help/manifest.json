@@ -1,0 +1,19 @@
+{
+  "id": "qq-help",
+  "name": "帮助命令",
+  "version": "2.0.0",
+  "description": "回复 /帮助，展示固定说明。",
+  "hostApiVersion": 2,
+  "runtime": "declarative",
+  "entry": "rules.json",
+  "capabilities": [
+    "commands"
+  ],
+  "configSchema": {
+    "text": {
+      "type": "string",
+      "title": "帮助内容",
+      "default": "你好，直接发消息即可聊天。主人可私聊发送 /bot 帮助。"
+    }
+  }
+}

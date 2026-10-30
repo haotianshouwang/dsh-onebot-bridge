@@ -1,0 +1,82 @@
+{
+  "name": "dsh-onebot-bridge",
+  "version": "0.8.0",
+  "description": "DSH QQ 插件框架：OneBot 11、主人管理与受限 Agent",
+  "type": "module",
+  "main": "src/host/index.js",
+  "exports": {
+    ".": "./src/host/index.js",
+    "./client": "./src/client/client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./sdk": {
+      "types": "./src/sdk.d.ts",
+      "default": "./src/sdk.js"
+    }
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22.13.0",
+    "dsh": "0.2.1-rc.2"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build:market": "node scripts/build-market.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "pdfjs-dist": "6.4.299",
+    "ws": "^8.18.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "src",
+    "examples",
+    "scripts/build-market.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/haotianshouwang/dsh-onebot-bridge.git"
+  },
+  "author": "haotianshouwang",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "onebot",
+    "onebot11",
+    "qq",
+    "cordis",
+    "agent",
+    "napcat"
+  ],
+  "homepage": "https://github.com/haotianshouwang/dsh-onebot-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/haotianshouwang/dsh-onebot-bridge/issues"
+  }
+}

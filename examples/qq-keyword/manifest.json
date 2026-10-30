@@ -1,0 +1,20 @@
+{
+  "id": "qq-keyword",
+  "name": "关键词回复",
+  "version": "2.0.0",
+  "description": "命中关键词后回复固定文字，并提供独立授权的 AI 回复动作。",
+  "hostApiVersion": 2,
+  "runtime": "declarative",
+  "entry": "rules.json",
+  "capabilities": [
+    "inbound",
+    "actions"
+  ],
+  "configSchema": {
+    "response": {
+      "type": "string",
+      "title": "回复内容",
+      "default": "在的，有什么事？"
+    }
+  }
+}
