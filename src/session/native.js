@@ -6,30 +6,44 @@ function cancelQuietly(agent){try{return Promise.resolve(agent.cancel({kind:'use
 export const SAFE_PRESET='qq-framework-restricted-v3';
 // Web 表面在宿主层把 compaction-basic / command-compact / tool-result-pruner 全部禁用，
 // 声明「由每个 Agent 预设自己挂载」。QQ 会话从 0.9.0 起长期复用，不挂压缩就会一直增长，
-// 直到某轮请求直接因上下文超限失败，因此受限预设必须自带这三件套里的两件（不需要 /compact 命令，QQ 没有命令入口）。
-const PRESET_ALLOWED=new Set(['@deepseek-ai/dsh-agent-tool-presentation','@deepseek-ai/dsh-compaction-basic','@deepseek-ai/dsh-compaction-tool-result-pruner']);
+// 直到某轮请求直接因上下文超限失败，因此受限预设必须自带压缩与工具结果裁剪。
+// 注意：这两个组件会注册 cordis 服务（compaction / toolResultPruner），必须放在
+// `cordis:group` 里并显式 isolate，否则 mountPreset 会以
+// 「Preset services require isolate realms」整体失败，导致 QQ Agent 无法建立会话。
+const PRESET_ALLOWED=new Set(['@deepseek-ai/dsh-agent-tool-presentation','cordis:group','@deepseek-ai/dsh-compaction-basic','@deepseek-ai/dsh-compaction-tool-result-pruner']);
+const COMPACTION_GROUP='qq-compaction';
 // 阈值依据：生产的会话日志记录了实际路由目标的 contextWindow=1048576（deepseek-flash）。
-// 0.25 => 约 262144 token 触发压缩，压缩后保留 8%（约 83886）继续对话，仍留 75% 窗口给当前轮
+// 0.25 => 约 262144 token 触发压缩，压缩后保留 8%（约 78643）继续对话，仍留 75% 窗口给当前轮
 // 与多步工具调用。用比例而不是绝对值：模型换窗口时自动缩放，且 retainRatio < thresholdRatio
 // 恒成立，不会因为窗口变小而变成非法配置、把预设整体挂坏。
 export function presetRows(){
  return [
   {id:'qq-native-tools',name:'@deepseek-ai/dsh-agent-tool-presentation',config:{mode:'native'}},
-  {id:'compaction-basic',name:'@deepseek-ai/dsh-compaction-basic',config:{thresholdRatio:0.25,retainRatio:0.08}},
-  {id:'tool-result-pruner',name:'@deepseek-ai/dsh-compaction-tool-result-pruner',config:{thresholdChars:8192}}
+  {id:COMPACTION_GROUP,name:'cordis:group',group:true,isolate:{compaction:true,toolResultPruner:true},config:[
+   {id:'compaction-basic',name:'@deepseek-ai/dsh-compaction-basic',config:{thresholdRatio:0.25,retainRatio:0.08}},
+   {id:'tool-result-pruner',name:'@deepseek-ai/dsh-compaction-tool-result-pruner',config:{thresholdChars:8192,headChars:4096,tailChars:1024}}
+  ]}
  ];
 }
 export function assertPresetRows(rows){
  if(!Array.isArray(rows)||!rows.length)throw new Error('QQ 预设组件清单无效');
  const ids=rows.map(row=>row?.id);
- for(const required of ['qq-native-tools','compaction-basic','tool-result-pruner'])if(ids.filter(id=>id===required).length!==1)throw new Error('QQ 预设必须且只能挂载一次：'+required);
+ for(const required of ['qq-native-tools',COMPACTION_GROUP])if(ids.filter(id=>id===required).length!==1)throw new Error('QQ 预设必须且只能挂载一次：'+required);
  if(new Set(ids).size!==ids.length)throw new Error('QQ 预设存在重复组件');
  for(const row of rows)if(!PRESET_ALLOWED.has(row?.name))throw new Error('QQ 预设不允许挂载额外组件：'+String(row?.name));
- const compaction=rows.find(row=>row.id==='compaction-basic').config||{};
+ const group=rows.find(row=>row.id===COMPACTION_GROUP);
+ if(group.name!=='cordis:group'||group.group!==true)throw new Error('压缩组件必须放在 cordis:group 分组里');
+ if(group.isolate?.compaction!==true||group.isolate?.toolResultPruner!==true)throw new Error('压缩组件必须声明 isolate，否则预设挂载会因服务泄漏整体失败');
+ if(!Array.isArray(group.config))throw new Error('压缩分组缺少组件列表');
+ const inner=group.config.map(row=>row?.id);
+ for(const required of ['compaction-basic','tool-result-pruner'])if(inner.filter(id=>id===required).length!==1)throw new Error('压缩分组必须且只能包含一次：'+required);
+ for(const row of group.config)if(!PRESET_ALLOWED.has(row?.name))throw new Error('压缩分组不允许挂载额外组件：'+String(row?.name));
+ const compaction=group.config.find(row=>row.id==='compaction-basic').config||{};
  if(typeof compaction.thresholdRatio!=='number'||!(compaction.thresholdRatio>0&&compaction.thresholdRatio<=0.5))throw new Error('压缩触发阈值须在 (0, 0.5]');
  if(typeof compaction.retainRatio!=='number'||!(compaction.retainRatio>0&&compaction.retainRatio<compaction.thresholdRatio))throw new Error('压缩保留比例须小于触发阈值');
- const pruner=rows.find(row=>row.id==='tool-result-pruner').config||{};
+ const pruner=group.config.find(row=>row.id==='tool-result-pruner').config||{};
  if(!Number.isInteger(pruner.thresholdChars)||pruner.thresholdChars<1024||pruner.thresholdChars>32768)throw new Error('工具结果裁剪阈值无效');
+ if(!Number.isInteger(pruner.headChars)||!Number.isInteger(pruner.tailChars)||pruner.headChars+pruner.tailChars+64>pruner.thresholdChars)throw new Error('裁剪保留区必须容得下头尾与标记');
  return rows;
 }
 export function summarize(events,baseline){
