@@ -26,6 +26,3 @@ scripts/verify-isolation.mjs
 scripts/check-deployment.mjs
 tests/isolation-guard.test.js
 tests/deployment-drift.test.js
-docs/PRE-PROD-CHECK.md
-docs/PHASE1-ACCEPTANCE.md
-docs/COMPACTION-FIX.md

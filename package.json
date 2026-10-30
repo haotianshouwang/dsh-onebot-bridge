@@ -57,8 +57,7 @@
     "scripts/build-market.mjs",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE",
-    "docs"
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
