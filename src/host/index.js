@@ -17,6 +17,9 @@ import {packagesFor,FRAMEWORK_VERSION,rememberSettings,migrateConfig,validateCon
 import {activateQzone} from '../builtins/qzone/index.js';
 import {createQzoneBackend} from '../builtins/qzone/backend.js';
 import {activateWeb} from '../builtins/web/index.js';
+import {StickerStore} from '../core/stickers.js';
+import {activateSticker} from '../builtins/sticker/index.js';
+import {readFile} from 'node:fs/promises';
 import {activateGroupMembers} from '../builtins/group-members/index.js';
 import {validateProfile,chatSettings} from '../session/chat-profile.js';
 import {Uninstaller} from '../core/uninstall.js';
@@ -46,6 +49,12 @@ export async function apply(ctx,config) {
   activateGroupMembers(sdk.facade());
   activateWeb(sdk.facade());
   activateQzone(sdk.facade(),createQzoneBackend(()=>bot));
+  const stickers=await new StickerStore(store.dir).open();
+  activateSticker(sdk.facade(),{stickers,readResource:async(id,context)=>{
+   const row=media.items.get(String(id));
+   if(!row||row.key!==context.key)throw new Error('表情资源不存在、已过期或不属于当前聊天');
+   return readFile(path.join(media.dir,row.id+'.bin'));
+  }});
   const uninstaller=new Uninstaller(store,{builtins,extensions,beforeChange:async()=>{invalidate(store);await native.revoke();}});
   const maintenance=setInterval(()=>sdk.pruneStorage().catch(e=>log('warn',e.message)),60000);maintenance.unref?.();
   events.subscribe('core-router',['message'],msg=>router.receive(msg));
