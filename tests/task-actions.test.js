@@ -29,6 +29,8 @@ test('任务动作通过权限检查后可创建、推进、验证和查询', as
   const context = permissions.issue(msg, 'chat');
   const outsider = permissions.issue({...msg, user: '10000009', peer: '10000009', key: bot + ':private:10000009', id: 'm2'}, 'chat');
   assert.match(permissions.decision(actions.definitions.get('qq.task.create'), outsider), /不在私聊监听范围|仅主人/);
+  const autonomous = permissions.issue({...msg, id: 'm3'}, 'autonomy');
+  assert.match(permissions.decision(actions.definitions.get('qq.task.create'), autonomous), /C 级操作需要主人明确确认/);
   const taskEvents = [];
   actions.onTaskEvent = async event => taskEvents.push(event);
   const created = await actions.invoke('qq.task.create', {goal: '阅读并验证一篇文章', completion: '两个独立来源一致', plan: ['搜索', '读取', '验证']}, context);

@@ -56,41 +56,47 @@ const LOCAL_SCRIPT = `param(
   [Parameter(Mandatory=$true)][string]$TextPath,
   [Parameter(Mandatory=$true)][string]$OutFile,
   [Parameter(Mandatory=$true)][string]$ErrorFile,
-  [string]$Voice = '',
+  [string]$VoiceName = '',
   [int]$Rate = 0,
   [int]$Volume = 100
 )
 $ErrorActionPreference = 'Stop'
 $debug = $OutFile + '.debug'
+$stream = $null
 try {
   Add-Content -Path $debug -Value 'start' -Encoding UTF8
-  Add-Type -AssemblyName System.Speech
-  Add-Content -Path $debug -Value 'speech-loaded' -Encoding UTF8
   $text = [System.IO.File]::ReadAllText($TextPath, [System.Text.Encoding]::UTF8)
   if ([string]::IsNullOrWhiteSpace($text)) { throw '语音文本为空' }
-  $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-  try {
-    if ($Voice) {
-      $found = @($synth.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Name -eq $Voice }) | Select-Object -First 1
-      if (-not $found) {
-        $names = (@($synth.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo.Name }) -join '、')
-        throw ('未安装音色「' + $Voice + '」，可用音色：' + $names)
-      }
-      $synth.SelectVoice($Voice)
-      Add-Content -Path $debug -Value 'voice-selected' -Encoding UTF8
+  $voice = New-Object -ComObject SAPI.SpVoice
+  if ($VoiceName) {
+    $voices = $voice.GetVoices()
+    $selected = $null
+    for ($i = 0; $i -lt $voices.Count; $i++) {
+      $description = $voices.Item($i).GetDescription()
+      if ($description -eq $VoiceName -or $description -like ($VoiceName + ' -*')) { $selected = $voices.Item($i); break }
     }
-    $synth.Rate = $Rate
-    $synth.Volume = $Volume
-    $format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(24000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
-    $synth.SetOutputToWaveFile($OutFile, $format)
-    Add-Content -Path $debug -Value 'output-set' -Encoding UTF8
-    $synth.Speak($text)
-    Add-Content -Path $debug -Value 'spoken' -Encoding UTF8
-  } finally { $synth.Dispose() }
+    if (-not $selected) {
+      $names = @()
+      for ($i = 0; $i -lt $voices.Count; $i++) { $names += $voices.Item($i).GetDescription() }
+      throw ('未安装音色「' + $VoiceName + '」，可用音色：' + ($names -join '、'))
+    }
+    $voice.Voice = $selected
+    Add-Content -Path $debug -Value 'voice-selected' -Encoding UTF8
+  }
+  $voice.Rate = $Rate
+  $voice.Volume = $Volume
+  $stream = New-Object -ComObject SAPI.SpFileStream
+  $stream.Open($OutFile, 3, $false)
+  $voice.AudioOutputStream = $stream
+  Add-Content -Path $debug -Value 'output-set' -Encoding UTF8
+  $voice.Speak($text)
+  Add-Content -Path $debug -Value 'spoken' -Encoding UTF8
 } catch {
   Add-Content -Path $debug -Value ('error: ' + $_.Exception.Message) -Encoding UTF8
   try { [System.IO.File]::WriteAllText($ErrorFile, $_.Exception.Message, (New-Object System.Text.UTF8Encoding($false))) } catch {}
   exit 1
+} finally {
+  if ($stream) { try { $stream.Close() } catch {} }
 }`;
 
 const PROVIDER_LABEL = { local: '本机 Windows 语音', siliconflow: '硅基流动', custom: '自建网络语音' };
@@ -154,7 +160,7 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
     const volume = Number.isInteger(config.localVolume) ? config.localVolume : 100;
     const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
       '-TextPath', textFile, '-OutFile', wavFile, '-ErrorFile', errorFile, '-Rate', String(rate), '-Volume', String(volume)];
-    if (selected) args.push('-Voice', selected);
+    if (selected) args.push('-VoiceName', selected);
     let runResult;
     try {
       runResult = await run(String(config.powershellPath || 'powershell.exe'), args, { timeoutMs: 12000, signal, label: '本地语音合成' });

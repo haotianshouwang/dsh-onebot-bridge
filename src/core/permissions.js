@@ -61,6 +61,7 @@ export class Permissions {
     if(c.mode==='context'&&(!cap?.publicSafe||cap.mutating||cap.ownerOnly))return '同群接话仅使用已授权的安全查询，修改和管理操作需要明确唤醒';
     if(c.mode==='ambient')return '随机参与只聊天，不执行工具';
     if(!cap||forbidden.test(cap.id))return '系统禁止或未知能力';
+    if(cap.riskLevel==='C'&&!['chat','agent'].includes(c.mode))return 'C 级操作需要主人明确确认';
     const f=this.store.data.framework;
     if(cap.available&&!cap.available())return '功能包已停用';
     if(!f.enabledActions.includes(cap.id))return '主人尚未启用此能力';
