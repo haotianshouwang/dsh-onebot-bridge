@@ -601,7 +601,32 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     const started = now();
     running = true;
     try {
-      const raw = await native.autonomy(plan(type));
+      let raw;
+      if (type === 'learn') {
+        // 两阶段：先只允许 search/read，确认两个独立来源后才允许 remember，
+        // 避免“验证失败但记忆已经写入”的副作用。
+        const discovery = plan(type);
+        discovery.allow = ['plugin.qq-web.search', 'plugin.qq-web.read'];
+        discovery.timeoutMs = 120000;
+        discovery.system += '\n\n这一阶段只做资料阅读：不要写记忆、不要调用 remember；完成至少两个独立来源的正文读取后，用简短文字说明要点和差异。';
+        discovery.user = '先阅读两个独立来源，不要写记忆。';
+        const first = await native.autonomy(discovery);
+        const reads = (first.tools || []).filter(row => row.capability === 'plugin.qq-web.read' && row.ok === true && row.summary?.textChars > 0 && row.summary?.url);
+        const sources = [...new Set(reads.map(row => row.summary.url))];
+        if (sources.length < 2) throw new Error('自主学习至少需要读取两个独立来源');
+        const sourceText = sources.map((url, index) => `${index + 1}. ${url}`).join('\n');
+        const second = await native.autonomy({
+          title: 'QQ 把学习结果写入记忆',
+          allow: ['plugin.qq-memory.remember'],
+          audit: true,
+          timeoutMs: 90000,
+          system: `[任务]\n只根据下面这次实际读取过的来源写 2–3 句理解，并调用 remember 存成通用记忆（tags 带“学习”）。sourceUrl 必须使用来源列表里的 URL；sourceTitle 可省略；有页面日期时填 publishedAt；confidence 按证据强弱填 0–1。不要补写未读到的内容。\n\n[本次真实来源]\n${sourceText}\n\n[阅读笔记]\n${String(first.text || '').slice(0, 3000)}`,
+          user: '把这次阅读结果写入长期记忆。'
+        });
+        raw = {text: second.text, tools: [...(first.tools || []), ...(second.tools || [])]};
+      } else {
+        raw = await native.autonomy(plan(type));
+      }
       const finished = now();
       const text = typeof raw === 'object' && raw !== null ? String(raw.text || '') : String(raw || '');
       const tools = typeof raw === 'object' && raw !== null && Array.isArray(raw.tools) ? raw.tools : null;

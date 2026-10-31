@@ -89,13 +89,17 @@ test('自主学习必须有搜索、正文、来源和记忆写入',async t=>{
  const at=new Date(2026,9,31,22,30).getTime();
  const x=await setup(t,{at});
  x.item.config.diaryEnabled=false;x.item.config.slangEnabled=false;x.item.config.learnEnabled=true;
- x.native.autonomy=async()=>({text:'学到了一点。',tools:[
+ const phases=[];
+ x.native.autonomy=async plan=>{phases.push(plan);return {text:'学到了一点。',tools:[
   {capability:'plugin.qq-web.search',ok:true,outcome:null,summary:{resultCount:2}},
   {capability:'plugin.qq-web.read',ok:true,outcome:null,summary:{textChars:120,url:'https://example.com/a'}},
   {capability:'plugin.qq-web.read',ok:true,outcome:null,summary:{textChars:90,url:'https://example.org/b'}},
   {capability:'plugin.qq-memory.remember',ok:true,outcome:null,summary:{id:'mem-1',sourceUrl:'https://example.com/a'}}
- ]});
+ ]};};
  assert.equal((await x.auto.tick(at,{force:'learn'})).ok,true);
+ assert.equal(phases.length,2);
+ assert.deepEqual(phases[0].allow,['plugin.qq-web.search','plugin.qq-web.read']);
+ assert.deepEqual(phases[1].allow,['plugin.qq-memory.remember']);
  const missingSource=await setup(t,{at});
  missingSource.item.config.diaryEnabled=false;missingSource.item.config.slangEnabled=false;missingSource.item.config.learnEnabled=true;
  missingSource.native.autonomy=async()=>({text:'学到了。',tools:[
