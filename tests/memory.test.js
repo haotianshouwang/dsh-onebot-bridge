@@ -107,6 +107,20 @@ test('remember 默认写用户记忆、支持语义去重并限制越权范围',
  assert.equal(x.memory.get(groupMemory.id).owner,group);
 });
 
+test('联网学习记忆保留来源、发布时间、可信度和过期时间',async t=>{
+ const x=await setup(t),c=x.context();
+ const saved=await x.call('remember',{text:'一篇公开资料的结论',tags:['学习'],sourceUrl:'https://example.com/article',sourceTitle:'原始资料',publishedAt:1790000000000,confidence:0.7,expiresAt:1800000000000},c);
+ const row=x.memory.get(saved.id);
+ assert.equal(row.source,'web');
+ assert.equal(row.source_url,'https://example.com/article');
+ assert.equal(row.source_title,'原始资料');
+ assert.equal(row.published_at,1790000000000);
+ assert.equal(row.confidence,0.7);
+ assert.equal(row.expires_at,1800000000000);
+ const recalled=await x.call('recall',{query:'公开资料'},c);
+ assert.equal(recalled.items.find(item=>item.id===saved.id).sourceUrl,'https://example.com/article');
+});
+
 test('recall 支持语义检索、记录使用次数并在没命中时明确为空',async t=>{
  const x=await setup(t),c=x.context();
  await x.call('remember',{text:'我不吃香菜'},c);

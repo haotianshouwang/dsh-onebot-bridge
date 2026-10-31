@@ -478,7 +478,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     if (type === 'learn') {
       return {
         title: 'QQ 自己上网学习', allow: ['plugin.qq-web.search', 'plugin.qq-web.read', 'plugin.qq-memory.remember'], audit: true,
-        system: common + '\n\n[任务] 挑一个你最近好奇的小知识，先 search 找资料，再用 read 打开一篇正文读完。然后用 2–3 句话写下自己的理解，调用 remember 存成通用记忆（tags 带“学习”）。不要照抄网页，不要写成长篇笔记。',
+        system: common + '\n\n[任务] 挑一个你最近好奇的小知识，先 search 找资料，再用 read 打开一篇正文读完。然后用 2–3 句话写下自己的理解，调用 remember 存成通用记忆（tags 带“学习”，sourceUrl 填实际打开过的 read 返回 URL，sourceTitle 填标题；有页面日期时填 publishedAt，confidence 只按证据强弱填 0–1）。不要照抄网页，不要写成长篇笔记。',
         user: '去学点自己想学的东西。'
       };
     }
@@ -553,6 +553,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
       if (!search || !(search.summary?.resultCount > 0)) return {ok: false, error: '没有成功搜索结果'};
       if (!read || !(read.summary?.textChars > 0)) return {ok: false, error: '没有成功读取网页正文'};
       if (!remember || !remember.summary?.id) return {ok: false, error: '学习结果没有成功写入长期记忆'};
+      if (!remember.summary?.sourceUrl) return {ok: false, error: '学习结果没有记录来源网址'};
       return {ok: true};
     }
     if (type === 'slang') {

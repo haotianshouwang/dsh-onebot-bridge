@@ -25,7 +25,10 @@ function publicRow(row) {
     useCount: Number(row.use_count) || 0,
     hasVector: Boolean(row.dim),
     model: row.model || '',
-    source: row.source || ''
+    source: row.source || '',
+    sourceUrl: row.source_url || '', sourceTitle: row.source_title || '',
+    capturedAt: row.captured_at || 0, publishedAt: row.published_at || 0,
+    confidence: Number(row.confidence ?? 1), expiresAt: row.expires_at || 0
   };
 }
 

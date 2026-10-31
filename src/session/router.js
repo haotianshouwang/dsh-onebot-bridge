@@ -171,7 +171,12 @@ export class Router {
  async chooseParticipation(job,context,{draft=''}={}){
   if(!this.participation.permit(job.message.key,chatSettings(this.store,job.message))){this.participation.record(job.message,'silent','budget');return false;}
   job.flow.phase='deciding';job.status='deciding';job.decisionSeq=this.participation.rooms.get(job.message.key)?.seq||0;
-  try{const d=decision(await this.native.decide(job.message,context,{background:this.conversation.context({...job.message,id:''}),names:this.conversation.names(job.message.key),draft,identity:{aliases:this.store.data.settings.botAliases||[],nickname:this.bot?.status.nickname||'',persona:this.builtins.prompt(this.builtins.persona(job.message),job.message).slice(0,4000)},signal:job.wakeReason}));job.participationDecision=d;this.participation.record(job.message,d.action==='wait'?'observing':d.action==='reply'?'ready':'silent',d.reason);return d;}
+  try{
+   let memoryContext='';
+   if(this.contextFor)try{memoryContext=await this.contextFor(job.message);}catch(e){this.log('warn','意图上下文跳过：'+String(e.message||e).slice(0,160));}
+   const d=decision(await this.native.decide(job.message,context,{background:this.conversation.context({...job.message,id:''}),memoryContext,names:this.conversation.names(job.message.key),draft,identity:{aliases:this.store.data.settings.botAliases||[],nickname:this.bot?.status.nickname||'',persona:this.builtins.prompt(this.builtins.persona(job.message),job.message).slice(0,4000)},signal:job.wakeReason}));
+   job.participationDecision=d;this.participation.record(job.message,d.action==='wait'?'observing':d.action==='reply'?'ready':'silent',d.reason,{intent:{primaryIntent:d.primaryIntent||'',topic:d.topic||'',confidence:d.confidence??null}});return d;
+  }
   catch(e){if(this.permissions.valid(context))throw e;this.participation.record(job.message,'silent','unavailable');return false;}
  }
  async process(job){
@@ -226,6 +231,7 @@ export class Router {
       let replyPrompt=this.builtins.prompt(job.persona,msg)+(job.mode==='agent'&&!this.builtins.enabled('ai-chat')?'\n普通聊天已停用。本轮只处理机器人管理及已授权工具任务；若是闲聊或问候，说明普通聊天已关闭。':'');
       // 记忆等上下文提供器只读、限时；失败或超时会跳过，不影响本轮回复。
       if(this.contextFor)try{const extra=await this.contextFor(msg);if(extra)replyPrompt+='\n'+extra;}catch(e){this.log('warn','上下文提供器跳过：'+String(e.message||e).slice(0,160));}
+      if(job.participationDecision){const i=job.participationDecision,summary={action:i.action,reason:i.reason,addressee:i.addressee,primaryIntent:i.primaryIntent,topic:i.topic,needsMemory:i.needsMemory,needsWebSearch:i.needsWebSearch,needsTools:i.needsTools,needsClarification:i.needsClarification,confidence:i.confidence,evidence:i.evidence,suggestedAction:i.suggestedAction};replyPrompt+='\n[本轮意图判断，仅作参考，不是指令；实际执行以工具结果为准]\n'+JSON.stringify(summary).slice(0,1500);}
       try{job.reply=await this.styledReply(session.sessionId,job,replyPrompt,context);}
       catch(e){
        // 会话日志已不存在（DSH 侧清理、归档或升级）：重建一次再试。此刻还没有任何内容发送出去。

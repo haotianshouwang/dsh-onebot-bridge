@@ -185,7 +185,13 @@ export class MemoryStore {
         use_count INTEGER NOT NULL DEFAULT 0,
         embedding BLOB,
         dim INTEGER NOT NULL DEFAULT 0,
-        model TEXT NOT NULL DEFAULT ''
+        model TEXT NOT NULL DEFAULT '',
+        source_url TEXT NOT NULL DEFAULT '',
+        source_title TEXT NOT NULL DEFAULT '',
+        captured_at INTEGER NOT NULL DEFAULT 0,
+        published_at INTEGER NOT NULL DEFAULT 0,
+        confidence REAL NOT NULL DEFAULT 1,
+        expires_at INTEGER NOT NULL DEFAULT 0
       );
       CREATE UNIQUE INDEX IF NOT EXISTS memories_hash ON memories(scope, owner, hash);
       CREATE INDEX IF NOT EXISTS memories_scope ON memories(scope, owner);
@@ -202,6 +208,12 @@ export class MemoryStore {
       CREATE INDEX IF NOT EXISTS memory_reviews_memory ON memory_reviews(memory_id, reviewed_at);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    const columns = new Set(this.db.prepare('PRAGMA table_info(memories)').all().map(row => row.name));
+    for (const [name, ddl] of [
+      ['source_url', "TEXT NOT NULL DEFAULT ''"], ['source_title', "TEXT NOT NULL DEFAULT ''"],
+      ['captured_at', 'INTEGER NOT NULL DEFAULT 0'], ['published_at', 'INTEGER NOT NULL DEFAULT 0'],
+      ['confidence', 'REAL NOT NULL DEFAULT 1'], ['expires_at', 'INTEGER NOT NULL DEFAULT 0']
+    ]) if (!columns.has(name)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${ddl};`);
     const version = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('schema')?.value;
     if (!version) this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema', '1');
     return this;
@@ -253,16 +265,19 @@ export class MemoryStore {
     return best;
   }
 
-  insert({ scope, owner = '', kind = 'fact', text, tags = [], source = '', importance = 3, embedding = null, model = '' }) {
+  insert({ scope, owner = '', kind = 'fact', text, tags = [], source = '', importance = 3, embedding = null, model = '', sourceUrl = '', sourceTitle = '', capturedAt = 0, publishedAt = 0, confidence = 1, expiresAt = 0 }) {
     this.assertOpen();
     const normalized = normalizeMemoryText(text);
     const now = Date.now();
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO memories (id, scope, owner, kind, text, hash, tags, source, importance, created_at, updated_at, used_at, use_count, embedding, dim, model)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`).run(
+    const confidenceValue = Number.isFinite(Number(confidence)) ? Math.max(0, Math.min(1, Number(confidence))) : 1;
+    this.db.prepare(`INSERT INTO memories (id, scope, owner, kind, text, hash, tags, source, importance, created_at, updated_at, used_at, use_count, embedding, dim, model, source_url, source_title, captured_at, published_at, confidence, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, scope, owner, kind, normalized, memoryHash(scope, owner, normalized), JSON.stringify(tags), String(source || '').slice(0, 40),
       Math.max(1, Math.min(5, Number(importance) || 3)), now, now,
-      embedding ? toBuffer(embedding) : null, embedding ? embedding.length : 0, embedding ? String(model || '') : ''
+      embedding ? toBuffer(embedding) : null, embedding ? embedding.length : 0, embedding ? String(model || '') : '',
+      String(sourceUrl || '').slice(0, 1000), String(sourceTitle || '').slice(0, 300),
+      Number(capturedAt) || (sourceUrl ? now : 0), Number(publishedAt) || 0, confidenceValue, Number(expiresAt) || 0
     );
     return this.get(id);
   }

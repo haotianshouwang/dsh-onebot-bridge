@@ -1,12 +1,19 @@
 import {publicText} from './output.js';
 const reasons={intent:'分析这句话在和谁交流',rhythm:'话题相关，按参与节奏继续旁听',mentioned:'被叫到',quoted:'正在回复我的消息',called:'叫了我的名字',followup:'同一人的连续追问',context:'接着刚才的话题',ambient:'尝试参与群聊',private:'私聊消息',poke:'戳一戳',management:'主人管理',plugin:'功能包回复',addressed:'这句话在问我',related:'可以补充当前话题',other:'这句话在和其他人交谈',complete:'目前没有需要补充的内容','need-more':'等待对方补充',stale:'话题已变化，略过旧回复',budget:'参与判断达到预算，继续旁听',unavailable:'参与判断暂不可用，继续旁听',merged:'已合并同一人的连续消息',cancelled:'对方取消了这次回复',expired:'这条回复已过时',waiting:'等待连续消息',responding:'正在准备回应',quiet:'保持旁听'};
 export function decision(value){
- let raw=String(value||'').trim().replace(/^\x60\x60\x60(?:json)?\s*|\x60\x60\x60$/g,'').trim();if(raw.length>1500)throw Error('参与判断过长');
+ let raw=String(value||'').trim().replace(/^\x60\x60\x60(?:json)?\s*|\x60\x60\x60$/g,'').trim();if(raw.length>3000)throw Error('参与判断过长');
  const d=JSON.parse(raw);if(!d||!['reply','wait','silent'].includes(d.action)||!['addressed','related','other','complete','need-more','stale'].includes(d.reason))throw Error('参与判断格式无效');
  const result={action:d.action,reason:d.reason};
  if(d.addressee!==undefined){if(!['self','member','group','unknown'].includes(d.addressee))throw Error('受话人无效');result.addressee=d.addressee;}
  if(d.antecedentId!==undefined){if(typeof d.antecedentId!=='string'||d.antecedentId.length>80)throw Error('承接消息无效');result.antecedentId=d.antecedentId;}
  if(d.correction!==undefined){if(typeof d.correction!=='boolean')throw Error('纠正标记无效');result.correction=d.correction;}
+ const textField=(key,max)=>{if(d[key]===undefined)return;if(typeof d[key]!=='string'||d[key].length>max)throw Error('意图字段无效：'+key);result[key]=d[key].trim();};
+ const boolField=key=>{if(d[key]===undefined)return;if(typeof d[key]!=='boolean')throw Error('意图字段无效：'+key);result[key]=d[key];};
+ const listField=(key,maxItems,maxLength)=>{if(d[key]===undefined)return;if(!Array.isArray(d[key])||d[key].length>maxItems||d[key].some(x=>typeof x!=='string'||x.length>maxLength))throw Error('意图字段无效：'+key);result[key]=d[key].map(x=>x.trim()).filter(Boolean);};
+ textField('primaryIntent',80);textField('topic',120);textField('conversationReference',120);textField('evidence',300);textField('suggestedAction',120);
+ listField('secondaryIntents',3,80);listField('emotionalCues',5,60);listField('needsTools',10,80);
+ boolField('needsMemory');boolField('needsWebSearch');boolField('needsClarification');
+ if(d.confidence!==undefined){if(typeof d.confidence!=='number'||!Number.isFinite(d.confidence)||d.confidence<0||d.confidence>1)throw Error('意图置信度无效');result.confidence=d.confidence;}
  if(result.addressee==='member'&&result.reason==='addressed')return {...result,action:'silent',reason:'other'};
  if(result.addressee==='unknown'&&result.reason==='addressed')return {...result,action:'wait',reason:'need-more'};
  return result;

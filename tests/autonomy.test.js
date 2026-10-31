@@ -85,6 +85,28 @@ test('自主活动没有工具审计时不能记为成功',async t=>{
  assert.equal(x.auto.store.state.log[0].verified,false);
 });
 
+test('自主学习必须有搜索、正文、来源和记忆写入',async t=>{
+ const at=new Date(2026,9,31,22,30).getTime();
+ const x=await setup(t,{at});
+ x.item.config.diaryEnabled=false;x.item.config.slangEnabled=false;x.item.config.learnEnabled=true;
+ x.native.autonomy=async()=>({text:'学到了一点。',tools:[
+  {capability:'plugin.qq-web.search',ok:true,outcome:null,summary:{resultCount:2}},
+  {capability:'plugin.qq-web.read',ok:true,outcome:null,summary:{textChars:120,url:'https://example.com/a'}},
+  {capability:'plugin.qq-memory.remember',ok:true,outcome:null,summary:{id:'mem-1',sourceUrl:'https://example.com/a'}}
+ ]});
+ assert.equal((await x.auto.tick(at,{force:'learn'})).ok,true);
+ const missingSource=await setup(t,{at});
+ missingSource.item.config.diaryEnabled=false;missingSource.item.config.slangEnabled=false;missingSource.item.config.learnEnabled=true;
+ missingSource.native.autonomy=async()=>({text:'学到了。',tools:[
+  {capability:'plugin.qq-web.search',ok:true,summary:{resultCount:1}},
+  {capability:'plugin.qq-web.read',ok:true,summary:{textChars:50,url:'https://example.com/a'}},
+  {capability:'plugin.qq-memory.remember',ok:true,summary:{id:'mem-1'}}
+ ]});
+ const failed=await missingSource.auto.tick(at,{force:'learn'});
+ assert.equal(failed.ok,false);
+ assert.match(failed.error,/来源网址/);
+});
+
 test('学黑话使用当前群上下文，群记忆才能写入',async t=>{
  const at=new Date(2026,9,31,22,30).getTime();
  const x=await setup(t,{at});

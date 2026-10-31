@@ -82,7 +82,10 @@ function publicRow(row) {
     tags: [...(row.tags || [])], importance: row.importance,
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
     usedAt: row.used_at ? new Date(row.used_at).toISOString() : null,
-    useCount: row.use_count || 0
+    useCount: row.use_count || 0,
+    sourceUrl: row.source_url || '', sourceTitle: row.source_title || '',
+    capturedAt: row.captured_at || 0, publishedAt: row.published_at || 0,
+    confidence: Number(row.confidence ?? 1), expiresAt: row.expires_at || 0
   };
 }
 
@@ -141,7 +144,12 @@ export function activateMemory(framework, { store, embed = embedOne, log } = {})
       scope: { type: 'string', enum: ['auto', 'user', 'group', 'global'], description: '默认 user' },
       kind: { type: 'string', enum: ['fact', 'preference', 'event', 'note'], description: '默认 fact' },
       tags: { ...tagsField, description: '可选标签，最多 5 个' },
-      importance: { type: 'integer', minimum: 1, maximum: 5, description: '1–5，默认 3' }
+      importance: { type: 'integer', minimum: 1, maximum: 5, description: '1–5，默认 3' },
+      sourceUrl: { type: 'string', maxLength: 1000, description: '可选：真实来源 URL；联网学习时必须填写实际打开过的页面' },
+      sourceTitle: { type: 'string', maxLength: 300, description: '可选：来源标题' },
+      publishedAt: { type: 'number', description: '可选：来源发布日期的时间戳（毫秒）' },
+      confidence: { type: 'number', description: '可选：0–1，未知时不要伪造高可信度' },
+      expiresAt: { type: 'number', description: '可选：预计过期时间戳（毫秒）' }
     }, ['text'])
   }, async (args, context, signal) => {
     const config = api.getConfig();
@@ -155,6 +163,13 @@ export function activateMemory(framework, { store, embed = embedOne, log } = {})
     const kind = KINDS.includes(args.kind) ? args.kind : 'fact';
     const importance = Math.max(1, Math.min(5, Number(args.importance) || 3));
     const tags = Array.isArray(args.tags) ? [...new Set(args.tags.map(tag => cleanText(tag).slice(0, 20)).filter(Boolean))].slice(0, 5) : [];
+    const sourceUrl = cleanText(args.sourceUrl || '');
+    if (sourceUrl && (!/^https:\/\/[^\s]+$/i.test(sourceUrl) || sourceUrl.length > 1000)) api.reject('来源网址必须是公开 HTTPS URL');
+    const confidence = args.confidence === undefined ? 1 : Number(args.confidence);
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) api.reject('可信度必须在 0–1 之间');
+    const publishedAt = args.publishedAt === undefined ? 0 : Number(args.publishedAt);
+    const expiresAt = args.expiresAt === undefined ? 0 : Number(args.expiresAt);
+    if (!Number.isFinite(publishedAt) || !Number.isFinite(expiresAt)) api.reject('来源时间无效');
 
     const { vector, model, note } = await embedQuietly(text, config, { signal, timeoutMs: EMBED_TIMEOUT });
     const hash = memoryHash(scope, owner, text);
@@ -168,10 +183,14 @@ export function activateMemory(framework, { store, embed = embedOne, log } = {})
       store.update(similar.row.id, { text, kind, tags, importance, embedding: vector, model });
       return { ok: true, id: similar.row.id, scope, deduped: 'similar', vector: true, instruction: '与已有记忆几乎重复，已合并更新，不要重复写入。' };
     }
-    const row = store.insert({ scope, owner, kind, text, tags, importance, source: 'chat', embedding: vector, model });
+    const row = store.insert({
+      scope, owner, kind, text, tags, importance, source: sourceUrl ? 'web' : 'chat', embedding: vector, model,
+      sourceUrl, sourceTitle: cleanText(args.sourceTitle || '').slice(0, 300), publishedAt,
+      confidence, expiresAt
+    });
     prune(config);
     return {
-      ok: true, id: row.id, scope, vector: Boolean(vector),
+      ok: true, id: row.id, scope, vector: Boolean(vector), sourceUrl: row.source_url || '',
       ...(note ? { embeddingNote: '向量生成失败，已按关键词保存：' + note } : {}),
       instruction: '已记住。以后在相关聊天里会自动回忆；不要逐字复述给用户，也不要在没有新信息时重复写入。'
     };
