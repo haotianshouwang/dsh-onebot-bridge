@@ -226,6 +226,31 @@ export async function apply(ctx,config) {
     }
     return {ok:false,note:'未知验证方式'};
   };
+  let memoryReviewTimer=null;
+  const queueExpiredMemoryReviews=async()=>{
+    if(!memoryAdmin||!taskStore)return;
+    let rows=[];
+    try{rows=memoryAdmin.expired({limit:5}).items||[];}catch(error){log('warn','过期记忆扫描失败：'+String(error?.message||error).slice(0,120));return;}
+    const day=new Date().toISOString().slice(0,10);
+    for(const row of rows){
+      try{
+        const task=await taskStore.create({
+          goal:'复查过期记忆：'+String(row.text||'').slice(0,120),
+          reason:'记忆已过期，需要重新核实来源或标记不确定',
+          completion:'重新读取来源并确认、修正或标记该记忆',
+          plan:['重新读取来源','核实并更新记忆'],
+          verificationMethod:'manual',
+          idempotencyKey:'memory-review:'+row.id+':'+day
+        });
+        await taskStore.attachMemory(task.id,row.id);
+      }catch(error){log('warn','过期记忆复查任务创建失败：'+String(error?.message||error).slice(0,120));}
+    }
+  };
+  if(memoryAdmin&&taskStore){
+    setTimeout(()=>{void queueExpiredMemoryReviews();},15000).unref?.();
+    memoryReviewTimer=setInterval(()=>{void queueExpiredMemoryReviews();},6*60*60*1000);
+    memoryReviewTimer.unref?.();
+  }
   if(taskStore&&typeof native.autonomy==='function')try{
     taskRunner=new TaskRunner({
       tasks:taskStore,
@@ -574,6 +599,6 @@ export async function apply(ctx,config) {
       return Response.json({ok:true,value:await task});
     }catch(error){await store.persist().catch(()=>{});return Response.json({ok:false,error:String(error.message||error).replaceAll(token||'\0','[已隐藏]')},{status:400});}
   }});
-  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearInterval(taskRunnerTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
+  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearInterval(taskRunnerTimer);clearInterval(memoryReviewTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
   await sdk.pruneStorage();await market.start();await media.start();await extensions.start();await native.start();await connect();qzoneAdmin.startScheduler();log('info','QQ 桥接插件已就绪，数据目录：'+store.dir);
 }
