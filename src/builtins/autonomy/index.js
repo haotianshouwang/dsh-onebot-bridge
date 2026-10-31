@@ -132,9 +132,12 @@ export class AutonomyStore {
   }
 
   async persist() {
+    // 保留最近 7 个有计数的日期；不能只保留进程当前日期，否则在跨午夜或
+    // 以显式时间参数运行时，刚 mark 的历史日期会被清掉，导致每日上限失真。
+    const days = Object.keys(this.state.counts || {}).filter(day => this.state.counts[day] && Object.keys(this.state.counts[day]).length).sort().slice(-7);
     const today = dayKey();
-    const counts = { [today]: this.state.counts?.[today] || {} };
-    this.state.counts = counts;
+    if (!days.includes(today)) days.push(today);
+    this.state.counts = Object.fromEntries(days.map(day => [day, this.state.counts[day] || {}]));
     this.state.log = (this.state.log || []).slice(0, 100);
     const text = JSON.stringify(this.state, null, 2);
     await writeFile(this.file + '.tmp', text, { encoding: 'utf8', mode: 0o600 });

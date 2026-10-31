@@ -206,6 +206,17 @@ export class MemoryStore {
         note TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS memory_reviews_memory ON memory_reviews(memory_id, reviewed_at);
+      CREATE TABLE IF NOT EXISTS memory_conflicts (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        old_text TEXT NOT NULL,
+        new_text TEXT NOT NULL,
+        old_source_url TEXT NOT NULL DEFAULT '',
+        new_source_url TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        resolved_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS memory_conflicts_memory ON memory_conflicts(memory_id, created_at);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     const columns = new Set(this.db.prepare('PRAGMA table_info(memories)').all().map(row => row.name));
@@ -282,7 +293,7 @@ export class MemoryStore {
     return this.get(id);
   }
 
-  update(id, { text, kind, tags, importance, embedding = null, model = '' }) {
+  update(id, { text, kind, tags, importance, embedding = null, model = '', sourceUrl, sourceTitle, capturedAt, publishedAt, confidence, expiresAt }) {
     this.assertOpen();
     const current = this.get(id);
     if (!current) return null;
@@ -290,18 +301,42 @@ export class MemoryStore {
     const nextTags = Array.isArray(tags) ? [...new Set([...(current.tags || []), ...tags])].slice(0, 5) : current.tags;
     const nextImportance = Math.max(1, Math.min(5, Number(importance ?? current.importance) || 3));
     const nextHash = memoryHash(current.scope, current.owner, normalized);
+    const nextSourceUrl = sourceUrl === undefined ? current.source_url : String(sourceUrl || '').slice(0, 1000);
+    const nextSourceTitle = sourceTitle === undefined ? current.source_title : String(sourceTitle || '').slice(0, 300);
+    const nextCaptured = capturedAt === undefined ? current.captured_at : (Number(capturedAt) || 0);
+    const nextPublished = publishedAt === undefined ? current.published_at : (Number(publishedAt) || 0);
+    const nextConfidence = confidence === undefined ? current.confidence : (Number.isFinite(Number(confidence)) ? Math.max(0, Math.min(1, Number(confidence))) : current.confidence);
+    const nextExpires = expiresAt === undefined ? current.expires_at : (Number(expiresAt) || 0);
     if (embedding?.length) {
-      this.db.prepare(`UPDATE memories SET text = ?, hash = ?, kind = ?, tags = ?, importance = ?, updated_at = ?, embedding = ?, dim = ?, model = ? WHERE id = ?`).run(
+      this.db.prepare(`UPDATE memories SET text = ?, hash = ?, kind = ?, tags = ?, importance = ?, updated_at = ?, embedding = ?, dim = ?, model = ?, source_url = ?, source_title = ?, captured_at = ?, published_at = ?, confidence = ?, expires_at = ? WHERE id = ?`).run(
         normalized, nextHash, kind || current.kind, JSON.stringify(nextTags), nextImportance, Date.now(),
-        toBuffer(embedding), embedding.length, String(model || ''), id
+        toBuffer(embedding), embedding.length, String(model || ''), nextSourceUrl, nextSourceTitle, nextCaptured, nextPublished, nextConfidence, nextExpires, id
       );
     } else {
       // 没有新向量时保留旧向量，避免“重复记住同一句话”把已有嵌入抹掉。
-      this.db.prepare(`UPDATE memories SET text = ?, hash = ?, kind = ?, tags = ?, importance = ?, updated_at = ? WHERE id = ?`).run(
-        normalized, nextHash, kind || current.kind, JSON.stringify(nextTags), nextImportance, Date.now(), id
+      this.db.prepare(`UPDATE memories SET text = ?, hash = ?, kind = ?, tags = ?, importance = ?, updated_at = ?, source_url = ?, source_title = ?, captured_at = ?, published_at = ?, confidence = ?, expires_at = ? WHERE id = ?`).run(
+        normalized, nextHash, kind || current.kind, JSON.stringify(nextTags), nextImportance, Date.now(), nextSourceUrl, nextSourceTitle, nextCaptured, nextPublished, nextConfidence, nextExpires, id
       );
     }
     return this.get(id);
+  }
+
+  recordConflict({memoryId, oldText, newText, oldSourceUrl = '', newSourceUrl = '', at = Date.now()}) {
+    this.assertOpen();
+    const id = randomUUID();
+    this.db.prepare(`INSERT INTO memory_conflicts (id, memory_id, old_text, new_text, old_source_url, new_source_url, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, String(memoryId), String(oldText).slice(0, 2000), String(newText).slice(0, 2000), String(oldSourceUrl).slice(0, 1000), String(newSourceUrl).slice(0, 1000), at);
+    return {id, memoryId, oldText: String(oldText).slice(0, 2000), newText: String(newText).slice(0, 2000), createdAt: at};
+  }
+
+  conflictsFor(memoryId) {
+    this.assertOpen();
+    return this.db.prepare('SELECT * FROM memory_conflicts WHERE memory_id = ? ORDER BY created_at DESC LIMIT 20').all(String(memoryId)).map(row => ({
+      id: row.id, memoryId: row.memory_id, oldText: row.old_text, newText: row.new_text,
+      oldSourceUrl: row.old_source_url, newSourceUrl: row.new_source_url,
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : null
+    }));
   }
 
   remove(id) {

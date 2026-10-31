@@ -145,8 +145,9 @@ export function createMemoryAdmin({store, getItem, now = () => Date.now()}) {
     return {
       memory: publicRow(row),
       related: related.slice(0, 20),
+      conflicts: memory.conflictsFor(row.id),
       historyAvailable: false,
-      historyNote: '当前只保存最近更新时间，不保存逐次编辑历史；复习记录单独保存在 memory_reviews。',
+      historyNote: '当前只保存最近更新时间，不保存逐次编辑历史；冲突记录单独保存在 memory_conflicts，复习记录保存在 memory_reviews。',
       reviews: reviews.map(review => ({
         id: review.id,
         reviewedAt: new Date(review.reviewedAt).toISOString(),

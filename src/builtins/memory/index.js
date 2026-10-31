@@ -175,14 +175,17 @@ export function activateMemory(framework, { store, embed = embedOne, log } = {})
 
     const { vector, model, note } = await embedQuietly(text, config, { signal, timeoutMs: EMBED_TIMEOUT });
     const hash = memoryHash(scope, owner, text);
+    const sourcePatch = sourceUrl ? {sourceUrl, sourceTitle: cleanText(args.sourceTitle || ''), publishedAt, confidence, expiresAt} : {};
     const exact = store.findExact(scope, owner, hash);
     if (exact) {
-      store.update(exact.id, { text, kind, tags, importance, embedding: vector, model });
+      if (exact.text !== text || (sourceUrl && sourceUrl !== exact.source_url)) store.recordConflict({memoryId: exact.id, oldText: exact.text, newText: text, oldSourceUrl: exact.source_url, newSourceUrl: sourceUrl});
+      store.update(exact.id, { text, kind, tags, importance, embedding: vector, model, ...sourcePatch });
       return { ok: true, id: exact.id, scope, deduped: 'exact', vector: Boolean(vector), instruction: '这条记忆已经在库里，已更新时间和标签，不要重复写入。' };
     }
     const similar = vector ? store.findSimilar({ scope, owner, vector, model, threshold: DEDUPE_SIMILARITY }) : null;
     if (similar) {
-      store.update(similar.row.id, { text, kind, tags, importance, embedding: vector, model });
+      if (similar.row.text !== text || (sourceUrl && sourceUrl !== similar.row.source_url)) store.recordConflict({memoryId: similar.row.id, oldText: similar.row.text, newText: text, oldSourceUrl: similar.row.source_url, newSourceUrl: sourceUrl});
+      store.update(similar.row.id, { text, kind, tags, importance, embedding: vector, model, ...sourcePatch });
       return { ok: true, id: similar.row.id, scope, deduped: 'similar', vector: true, instruction: '与已有记忆几乎重复，已合并更新，不要重复写入。' };
     }
     const row = store.insert({
