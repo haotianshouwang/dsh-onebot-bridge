@@ -59,6 +59,18 @@ test('任务幂等键避免重复创建，并保存验证方式', async t => {
   assert.equal(a.verificationSpec.outcome, 'confirmed');
 });
 
+test('步骤幂等键避免同一外部操作重复记录', async t => {
+  const x = await setup(t);
+  const task = await x.store.create({goal: '幂等步骤'});
+  await x.store.transition(task.id, 'analyzing');
+  await x.store.transition(task.id, 'planning');
+  await x.store.transition(task.id, 'executing');
+  const a = await x.store.addStep(task.id, {title: '发送', operationKey: 'send-1'});
+  const b = await x.store.addStep(task.id, {title: '发送重复', operationKey: 'send-1'});
+  assert.equal(a.index, b.index);
+  assert.equal(x.store.get(task.id).steps.length, 1);
+});
+
 test('任务列表区分活动/等待授权/失败，不把完成当成活动', async t => {
   const x = await setup(t);
   const a = await x.store.create({goal: 'A'}), b = await x.store.create({goal: 'B'}), c = await x.store.create({goal: 'C'});

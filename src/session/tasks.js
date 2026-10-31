@@ -132,10 +132,15 @@ export class TaskStore {
     return task;
   }
 
-  async addStep(id, {title, tool = '', status = 'done', outcome = '', note = ''} = {}) {
+  async addStep(id, {title, tool = '', status = 'done', outcome = '', note = '', operationKey = ''} = {}) {
     const task = this.get(id);
     if (!task) throw new Error('任务不存在');
     if (task.status !== 'executing') throw new Error('只有执行中的任务可以追加步骤');
+    const key = clean(operationKey, 160);
+    if (key) {
+      const existing = task.steps.find(step => step.operationKey === key);
+      if (existing) return existing;
+    }
     if (task.steps.length >= task.maxSteps) throw new Error('任务步骤已达到上限');
     const step = {
       index: task.steps.length + 1,
@@ -144,6 +149,7 @@ export class TaskStore {
       status: ['pending', 'running', 'done', 'failed', 'skipped'].includes(status) ? status : 'done',
       outcome: clean(outcome, 200),
       note: clean(note, 200),
+      operationKey: key,
       at: this.now()
     };
     task.steps.push(step);

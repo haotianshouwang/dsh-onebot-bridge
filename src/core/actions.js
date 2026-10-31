@@ -140,7 +140,7 @@ export class Actions {
    return {task};
   },{ownerOnly:true,mutating:true});
   this.add('qq.task.step','给执行中的任务追加一个真实步骤结果。',object({
-   id:str('任务 ID',100),title:str('步骤',200),tool:str('工具',100),status:{type:'string',enum:['pending','running','done','failed','skipped']},outcome:str('结果摘要',200),note:str('备注',200)
+   id:str('任务 ID',100),title:str('步骤',200),tool:str('工具',100),status:{type:'string',enum:['pending','running','done','failed','skipped']},outcome:str('结果摘要',200),note:str('备注',200),operationKey:str('幂等操作键',160)
   },['id','title']),async a=>({step:await tasks.addStep(a.id,a)}),{ownerOnly:true,mutating:true});
   this.add('qq.task.verify','给验证中的任务写入人工/程序验证结果。',object({
    id:str('任务 ID',100),ok:{type:'boolean'},note:str('验证依据',300)
