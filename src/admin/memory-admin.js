@@ -56,6 +56,12 @@ export function createMemoryAdmin({store, getItem, now = () => Date.now()}) {
     return value;
   }
 
+  function expired(body = {}) {
+    const memory = requireStore();
+    const rows = memory.expired({limit: Math.max(1, Math.min(100, Number(body.limit) || 20)), now: now()});
+    return {items: rows.map(publicRow), instruction: '这些记忆已过期；重新核实来源后再决定保留、修正或删除，不要自动当成当前事实。'};
+  }
+
   function overview() {
     const value = item();
     const memory = requireStore();
@@ -287,5 +293,5 @@ export function createMemoryAdmin({store, getItem, now = () => Date.now()}) {
     };
   }
 
-  return {overview, list, get, create, update, remove, graph, reviewOverview, reviewComplete, resolveConflict};
+  return {overview, expired, list, get, create, update, remove, graph, reviewOverview, reviewComplete, resolveConflict};
 }

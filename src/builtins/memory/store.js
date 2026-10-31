@@ -427,6 +427,13 @@ export class MemoryStore {
     return {total, rows: rows.map(value => this.row(value))};
   }
 
+  expired({limit = 20, now = Date.now()} = {}) {
+    this.assertOpen();
+    const rows = this.db.prepare('SELECT * FROM memories WHERE expires_at > 0 AND expires_at <= ? ORDER BY expires_at ASC LIMIT ?')
+      .all(Number(now), Math.max(1, Math.min(100, Number(limit) || 20)));
+    return rows.map(value => this.row(value));
+  }
+
   reviewRows(memoryId) {
     this.assertOpen();
     return this.db.prepare('SELECT * FROM memory_reviews WHERE memory_id = ? ORDER BY reviewed_at ASC').all(String(memoryId))

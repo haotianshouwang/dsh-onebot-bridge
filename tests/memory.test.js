@@ -122,6 +122,7 @@ test('联网学习记忆保留来源、发布时间、可信度和过期时间',
  const old=await x.call('remember',{text:'一个已经过期的公开结论',sourceUrl:'https://example.com/old',expiresAt:1},c);
  const oldRecall=await x.call('recall',{query:'过期公开结论'},c);
  assert.equal(oldRecall.items.find(item=>item.id===old.id).expired,true);
+ assert.equal(x.memory.expired().some(item=>item.id===old.id),true);
  const conflictSource=await x.call('remember',{text:'一篇公开资料的结论',tags:['学习'],sourceUrl:'https://example.org/other',sourceTitle:'另一个来源'},c);
  assert.equal(conflictSource.deduped,'exact');
  const conflicts=x.memory.conflictsFor(saved.id);
