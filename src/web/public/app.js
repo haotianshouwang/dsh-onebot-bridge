@@ -1832,7 +1832,8 @@ function memoryView() {
   const head = pageHeader('长期记忆', overview.description || '记忆保存在本机 SQLite，按用户、群和通用范围隔离。', [
     statePill(overview.enabled, overview.error),
     pill(`共 ${overview.stats.total} 条`),
-    pill(`${overview.stats.due} 条待复习`, overview.stats.due ? 'warn' : '')
+    pill(`${overview.stats.due} 条待复习`, overview.stats.due ? 'warn' : ''),
+    ...(overview.stats.expired ? [pill(`${overview.stats.expired} 条可能过期`, 'warn')] : [])
   ], [
     pluginEnableToggle(overview, 'memory', 'qq-memory'),
     button('返回插件', () => go('plugins'), {ghost: true}),

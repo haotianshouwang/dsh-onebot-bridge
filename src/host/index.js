@@ -129,11 +129,12 @@ export async function apply(ctx,config) {
   const taskStore=await new TaskStore(path.join(store.dir,'tasks')).open();
   actions.installTaskActions(taskStore);
   // 自主时间：定时问一次“现在要不要做点自己的事”，每次都在受限会话里完成。
-  let autonomy=null,autonomyTimer=null;
+  let autonomy=null,autonomyTimer=null,proactive=null,proactiveTimer=null;
   try{
    autonomy=await activateAutonomy(sdk.facade(),{dir:path.join(store.dir,'autonomy'),native,
     persona:()=>renderPersona(resolvePersona(store.data,'',bot?.status?.bot||''),{kind:'private'}),
-    online:()=>bot?.status?.online===true,log});
+    online:()=>bot?.status?.online===true,log,
+    onLearned:event=>proactive?.notify({reason:'learning',title:event?.title,summary:event?.summary})});
    autonomyTimer=setInterval(()=>{if(!bot?.status?.online)return;void autonomy.tick().catch(error=>log('warn','自主活动调度失败：'+String(error?.message||error).slice(0,160)));},60000);
    autonomyTimer.unref?.();
   }catch(error){log('error','自主时间不可用：'+error.message);autonomy=null;}
@@ -156,7 +157,6 @@ export async function apply(ctx,config) {
     log
   }).open():null;
   // 主动联系：配置放在自主时间包，默认关闭；独立于“自主活动”的发送权限。
-  let proactive=null,proactiveTimer=null;
   const proactiveKey=()=>{
     const id=bot?.status?.bot,owner=store.data.framework.ownerQQ;
     return id&&owner?id+':private:'+owner:'';

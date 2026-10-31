@@ -80,6 +80,7 @@ export function createMemoryAdmin({store, getItem, now = () => Date.now()}) {
         vectors: stats.vectors,
         models: stats.models,
         latest: stats.latest ? new Date(stats.latest).toISOString() : null,
+        expired: stats.expired || 0,
         due: review.due.length,
         reviewedToday: review.reviewedToday,
         reviewedTotal: review.reviewedTotal

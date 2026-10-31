@@ -6,7 +6,7 @@ import {migrateConfig} from '../src/core/package-model.js';
 const bot='10000002',owner='10000001',other='12345678',group='88888',key=bot+':group:'+group;
 const msg=(extra={})=>({bot,user:owner,kind:'group',peer:group,key,id:'m1',...extra});
 
-async function setup(t,{at}={}){
+async function setup(t,{at,onLearned}={}){
  process.env.QQBOT_OWNER=owner;
  const dir=await mkdtemp(path.join(os.tmpdir(),'qq-autonomy-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -18,7 +18,7 @@ async function setup(t,{at}={}){
  let clock={now:at??Date.now()};
  const calls=[];
  const native={autonomy:async plan=>{calls.push(plan);const tools=(plan.allow||[]).map(capability=>({capability,ok:true,outcome:capability==='plugin.qq-qzone.publish'?'confirmed':null,summary:{id:'tool-1',resultCount:1,textChars:10,itemCount:1,scope:capability==='plugin.qq-memory.remember'?'group':undefined}}));return {text:'做完了，今天有点累。',tools};}};
- const auto=await activateAutonomy(sdk.facade(),{dir:path.join(dir,'auto'),native,persona:()=>'你是测试人设。',online:()=>true,now:()=>clock.now});
+ const auto=await activateAutonomy(sdk.facade(),{dir:path.join(dir,'auto'),native,persona:()=>'你是测试人设。',online:()=>true,now:()=>clock.now,onLearned});
  const item=store.data.framework.nativePackages['qq-autonomy'];
  item.enabled=true;item.scope={private:true,allUsers:false,users:[owner],groups:[group]};
  item.config={...auto.api.getConfig(),enabled:true,activeHours:'00:00-23:59',diaryEnabled:true,diaryHour:0,learnEnabled:false,slangEnabled:false,qzonePostEnabled:false,browseEnabled:false,maxRunsPerDay:8};
@@ -117,6 +117,21 @@ test('自主学习必须有搜索、正文、来源和记忆写入',async t=>{
  const weak=await oneSource.auto.tick(at,{force:'learn'});
  assert.equal(weak.ok,false);
  assert.match(weak.error,/两个独立来源/);
+});
+
+test('真实学习完成后才触发学习通知回调',async t=>{
+ const at=new Date(2026,9,31,22,30).getTime();
+ let learned=null;
+ const x=await setup(t,{at,onLearned:async event=>{learned=event;}});
+ x.item.config.diaryEnabled=false;x.item.config.slangEnabled=false;x.item.config.learnEnabled=true;
+ x.native.autonomy=async()=>({text:'学到了一点。',tools:[
+  {capability:'plugin.qq-web.search',ok:true,summary:{resultCount:2}},
+  {capability:'plugin.qq-web.read',ok:true,summary:{textChars:100,url:'https://example.com/a'}},
+  {capability:'plugin.qq-web.read',ok:true,summary:{textChars:80,url:'https://example.org/b'}},
+  {capability:'plugin.qq-memory.remember',ok:true,summary:{id:'mem-1',sourceUrl:'https://example.com/a'}}
+ ]});
+ assert.equal((await x.auto.tick(at,{force:'learn'})).ok,true);
+ assert.equal(learned?.title,'自主学习完成');
 });
 
 test('学黑话使用当前群上下文，群记忆才能写入',async t=>{

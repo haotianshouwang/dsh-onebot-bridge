@@ -512,7 +512,8 @@ export class MemoryStore {
     const vectors = Number(this.db.prepare('SELECT COUNT(*) AS n FROM memories WHERE dim > 0').get()?.n || 0);
     const models = this.db.prepare("SELECT model, COUNT(*) AS n FROM memories WHERE model <> '' GROUP BY model").all().map(row => ({ model: row.model, count: Number(row.n) }));
     const latest = Number(this.db.prepare('SELECT MAX(updated_at) AS t FROM memories').get()?.t || 0);
-    return { total, byScope, vectors, models, latest };
+    const expired = Number(this.db.prepare('SELECT COUNT(*) AS n FROM memories WHERE expires_at > 0 AND expires_at <= ?').get(Date.now())?.n || 0);
+    return { total, byScope, vectors, models, latest, expired };
   }
 
   prune({ days = 730, max = 2000, now = Date.now() } = {}) {

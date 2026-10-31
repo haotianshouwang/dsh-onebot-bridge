@@ -384,7 +384,7 @@ function scopeAllows(scope, input) {
   return input.kind === 'group' ? (scope.groups || []).includes(input.peer) : scope.private === true && (scope.allUsers === true || (scope.users || []).includes(input.actor));
 }
 
-export async function activateAutonomy(framework, { dir, native, persona = () => '', online = () => true, log = () => {}, now = () => Date.now() } = {}) {
+export async function activateAutonomy(framework, { dir, native, persona = () => '', online = () => true, log = () => {}, now = () => Date.now(), onLearned = null } = {}) {
   if (!native || typeof native.autonomy !== 'function') throw new Error('核心不支持自主会话');
   const api = framework.registerTrustedPackage(manifest);
   const store = new AutonomyStore(dir);
@@ -637,6 +637,10 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
         log('warn', '自主时间历史清理失败：' + String(error?.message || error).slice(0, 120));
       }
       await store.persist();
+      if (type === 'learn' && typeof onLearned === 'function') {
+        try { await onLearned({at: finished, title: '自主学习完成', summary: note.slice(0, 300)}); }
+        catch (error) { log('warn', '学习通知入队失败：' + String(error?.message || error).slice(0, 120)); }
+      }
       log('info', '自主活动完成：' + TYPES[type], { type });
       return {ok: true, type, text, verified: true};
     } catch (error) {

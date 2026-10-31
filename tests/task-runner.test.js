@@ -53,6 +53,20 @@ test('任务执行器没有工具结果时失败，而不是把模型文字当�
   assert.equal(x.tasks.get(task.id).steps[0].status, 'failed');
 });
 
+test('任务执行器重启后从持久化步骤继续', async t => {
+  const x = await setup(t);
+  const task = await x.tasks.create({goal: '跨重启任务', plan: ['第一步', '第二步']});
+  await x.tasks.transition(task.id, 'analyzing');
+  await x.tasks.transition(task.id, 'planning');
+  await x.runner.tick();
+  const reopened = await new TaskStore(x.tasks.dir).open();
+  const resumed = new TaskRunner({tasks: reopened, enabled: () => true, executeStep: async () => ({ok: true, tool: 'plugin.qq-web.read', outcome: 'ok'})});
+  const result = await resumed.tick();
+  assert.equal(result.ok, true);
+  assert.equal(reopened.get(task.id).steps.length, 2);
+  assert.equal(reopened.get(task.id).status, 'verifying');
+});
+
 test('任务执行器关闭时不做任何事', async t => {
   const x = await setup(t);
   x.runner.enabled = () => false;
