@@ -235,7 +235,7 @@ test('single prompt personas preserve stable bindings, and client bundle parses'
 });
 
 test('revocation during resource preparation prevents the pending write from reaching gateway',async t=>{
- const x=await setup(t),c=x.permissions.issue(message());x.store.data.framework.enabledActions.push('qq.profile.avatar');
+ const x=await setup(t),c=x.permissions.issue(message(),'chat');x.store.data.framework.enabledActions.push('qq.profile.avatar');
  let release;x.media.resolve=()=>new Promise(resolve=>{release=resolve;});
  const pending=x.actions.invoke('qq.profile.avatar',{resourceId:'resource'},c);await delay(1);invalidate(x.store);release({file:'base64://AAAA'});
  await assert.rejects(pending,/撤销/);assert.equal(x.sent.length,0);

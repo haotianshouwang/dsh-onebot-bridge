@@ -29,7 +29,7 @@ async function setup(t){
 }
 const shared=(capability,extra={})=>({id:'shared-'+capability,capability,allUsers:true,users:[],groups:[group],private:true,expires:'',perMinute:5,...extra});
 test('owner tools work inside the current authorized group without private-chat restriction',async t=>{
- const x=await setup(t);x.store.data.framework.enabledActions.push('qq.group.info','qq.group.name');const c=x.permissions.issue(message());
+ const x=await setup(t);x.store.data.framework.enabledActions.push('qq.group.info','qq.group.name');const c=x.permissions.issue(message(),'chat');
  assert.equal(x.permissions.decision(x.actions.definitions.get('qq.group.info'),c),null);
  const info=await x.actions.invoke('qq.group.info',{},c);assert.equal(info.group_name,'测试群');
  await x.actions.invoke('qq.group.name',{name:'新的群名'},c);assert.equal(x.sent[0].params.group_id,Number(group));

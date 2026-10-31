@@ -61,7 +61,6 @@ export class Permissions {
     if(c.mode==='context'&&(!cap?.publicSafe||cap.mutating||cap.ownerOnly))return '同群接话仅使用已授权的安全查询，修改和管理操作需要明确唤醒';
     if(c.mode==='ambient')return '随机参与只聊天，不执行工具';
     if(!cap||forbidden.test(cap.id))return '系统禁止或未知能力';
-    if(cap.riskLevel==='C'&&!['chat','agent'].includes(c.mode))return 'C 级操作需要主人明确确认';
     const f=this.store.data.framework;
     if(cap.available&&!cap.available())return '功能包已停用';
     if(!f.enabledActions.includes(cap.id))return '主人尚未启用此能力';
@@ -70,6 +69,7 @@ export class Permissions {
     if(f.grants.some(g=>g.deny&&matches(g)))return '此范围已明确拒绝';
     if(cap.privateOnly&&c.kind!=='private')return '此能力仅在私聊可用';
     if(cap.ownerOnly&&!this.owner(c))return '此能力仅主人可用';
+    if(cap.riskLevel==='C'&&!['chat','agent'].includes(c.mode))return 'C 级操作需要主人明确确认';
     if(cap.inScope&&!cap.inScope(c))return '此插件未对当前聊天开放';
     if(cap.publicSafe&&!cap.mutating&&!cap.ownerOnly&&baselineQueries.has(cap.id)&&(c.kind==='group'||cap.plugin==='qq-web')&&['chat','context'].includes(c.mode))return null;
     if(this.owner(c))return null;
