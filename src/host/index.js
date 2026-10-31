@@ -206,6 +206,15 @@ export async function apply(ctx,config) {
       if(expected&&!rows.some(step=>String(step.outcome||'').includes(expected)))return {ok:false,note:'工具结果不符合期望'};
       return {ok:true,note:'指定工具记录满足条件'};
     }
+    if(method==='memory'){
+      const id=String(spec.memoryId||'');
+      const row=memory?.get(id);
+      if(!row)return {ok:false,note:'验证记忆不存在'};
+      if(!row.source_url)return {ok:false,note:'记忆没有来源网址'};
+      if(Number(row.expires_at)>0&&Number(row.expires_at)<=Date.now())return {ok:false,note:'记忆已经过期'};
+      if(spec.minConfidence!==undefined&&Number(row.confidence)<Number(spec.minConfidence))return {ok:false,note:'记忆可信度低于要求'};
+      return {ok:true,note:'记忆存在且来源/时效满足要求'};
+    }
     if(method==='readback'){
       const capability=String(spec.capability||''),owner=store.data.framework.ownerQQ,botId=bot?.status?.bot;
       if(!owner||!botId)return {ok:false,note:'无法建立回读上下文'};

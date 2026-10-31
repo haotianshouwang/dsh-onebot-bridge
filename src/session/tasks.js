@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 
 export const TASK_STATUSES = ['pending', 'analyzing', 'planning', 'waiting_approval', 'executing', 'verifying', 'done', 'failed', 'cancelled'];
-export const VERIFICATION_METHODS = ['manual', 'steps', 'tool', 'readback'];
+export const VERIFICATION_METHODS = ['manual', 'steps', 'tool', 'readback', 'memory'];
 const TRANSITIONS = {
   pending: ['analyzing', 'cancelled'],
   analyzing: ['planning', 'failed', 'cancelled'],
@@ -71,6 +71,7 @@ export class TaskStore {
     const method = VERIFICATION_METHODS.includes(verificationMethod) ? verificationMethod : 'manual';
     if (method === 'tool' && !clean(verificationSpec?.capability, 100)) throw new Error('tool 验证必须声明 capability');
     if (method === 'readback' && !clean(verificationSpec?.capability, 100)) throw new Error('readback 验证必须声明 capability');
+    if (method === 'memory' && !clean(verificationSpec?.memoryId, 100)) throw new Error('memory 验证必须声明 memoryId');
     const key = clean(idempotencyKey, 200);
     if (key) {
       const existing = this.tasks.find(task => task.idempotencyKey === key);

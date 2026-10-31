@@ -59,6 +59,14 @@ test('任务幂等键避免重复创建，并保存验证方式', async t => {
   assert.equal(a.verificationSpec.outcome, 'confirmed');
 });
 
+test('memory 验证必须带记忆 ID', async t => {
+  const x = await setup(t);
+  await assert.rejects(x.store.create({goal: '学习验证', verificationMethod: 'memory'}), /memoryId/);
+  const task = await x.store.create({goal: '学习验证', verificationMethod: 'memory', verificationSpec: {memoryId: 'mem-1', minConfidence: 0.6}});
+  assert.equal(task.verificationMethod, 'memory');
+  assert.equal(task.verificationSpec.memoryId, 'mem-1');
+});
+
 test('步骤幂等键避免同一外部操作重复记录', async t => {
   const x = await setup(t);
   const task = await x.store.create({goal: '幂等步骤'});
