@@ -45,4 +45,6 @@ test('任务动作通过权限检查后可创建、推进、验证和查询', as
   assert.equal((await actions.invoke('qq.task.get', {id: created.id}, context)).task.verification.ok, true);
   assert.equal(taskEvents.length, 1);
   assert.equal(taskEvents[0].reason, 'task');
+  assert.equal(actions.definitions.get('core.status').riskLevel, 'A');
+  assert.equal(actions.definitions.get('qq.task.create').riskLevel, 'C');
 });

@@ -144,7 +144,7 @@ export class Actions {
  add(id,description,parameters,run,options={}){
   if(this.definitions.has(id))throw new Error('能力 ID 冲突');
   if(!parameters||parameters.type!=='object'||typeof parameters.properties!=='object')throw new Error('动作必须声明对象参数 Schema');
-  const item={id,description,parameters,run,...options};item.publicSafe=!item.ownerOnly&&!item.mutating&&(options.publicSafe===true||publicQueries.has(id));item.available=()=>this.definitions.get(id)===item&&(!options.available||options.available());this.definitions.set(id,item);return()=>this.definitions.delete(id);
+  const item={id,description,parameters,run,...options};item.publicSafe=!item.ownerOnly&&!item.mutating&&(options.publicSafe===true||publicQueries.has(id));item.riskLevel=item.riskLevel||(item.ownerOnly&&item.mutating?'C':item.ownerOnly||item.mutating?'B':'A');item.available=()=>this.definitions.get(id)===item&&(!options.available||options.available());this.definitions.set(id,item);return()=>this.definitions.delete(id);
  }
  attach(bot){this.bot=bot;}
  catalog(){return [...this.definitions.values()].map(({run,available,...item})=>({...item,enabled:this.store.data.framework.enabledActions.includes(item.id)}));}
