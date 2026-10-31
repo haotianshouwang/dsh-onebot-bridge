@@ -850,7 +850,18 @@ function permissionsView() {
   const capGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, items]) => el('div', { class: 'cap-group' },
     el('h4', {}, name === 'core' ? '核心' : name === 'qq' ? 'QQ 动作' : '插件 · ' + name),
     items.map(cap => {
-      const input = el('input', { type: 'checkbox', checked: enabled.has(cap.id), onchange: event => { if (event.target.checked) enabled.add(cap.id); else enabled.delete(cap.id); } });
+      const input = el('input', { type: 'checkbox', checked: enabled.has(cap.id), onchange: event => {
+        if (event.target.checked && cap.riskLevel === 'C') {
+          event.target.checked = false;
+          confirmDialog('启用高风险动作', '该动作是 C 级高风险能力，可能发送、发布、删除或修改状态。确认只向可信范围授权。', () => {
+            input.checked = true;
+            enabled.add(cap.id);
+          }, '确认启用');
+          return;
+        }
+        if (event.target.checked) enabled.add(cap.id);
+        else enabled.delete(cap.id);
+      } });
       boxes.push(cap.id);
       return el('label', { class: 'cap' }, input,
         el('span', {}, el('span', { class: 'name' }, cap.description || cap.id), el('span', { class: 'id' }, cap.id)),
