@@ -855,6 +855,7 @@ function permissionsView() {
       return el('label', { class: 'cap' }, input,
         el('span', {}, el('span', { class: 'name' }, cap.description || cap.id), el('span', { class: 'id' }, cap.id)),
         el('span', { class: 'tags' },
+          el('span', { class: 'tag' }, '风险 ' + (cap.riskLevel || '—')),
           cap.ownerOnly ? el('span', { class: 'tag' }, '仅主人') : null,
           cap.mutating ? el('span', { class: 'tag' }, '修改') : null,
           cap.publicSafe ? el('span', { class: 'tag' }, '可共享') : null));
