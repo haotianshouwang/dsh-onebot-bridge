@@ -39,6 +39,7 @@ test('任务执行器每次只推进一步，所有计划步骤完成后进入�
   const done = x.tasks.get(task.id);
   assert.equal(done.status, 'verifying');
   assert.equal(done.steps.length, 2);
+  assert.match(done.steps[0].operationKey, /^plan:0:/);
   assert.equal(x.calls.length, 2);
 });
 

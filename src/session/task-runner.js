@@ -89,7 +89,8 @@ export class TaskRunner {
         tool: result?.tool || '',
         status: ok ? 'done' : 'failed',
         outcome: String(result?.outcome || result?.text || result?.error || '').slice(0, 200),
-        note: ok ? '' : String(result?.error || '步骤没有可验证结果').slice(0, 200)
+        note: ok ? '' : String(result?.error || '步骤没有可验证结果').slice(0, 200),
+        operationKey: ok ? `plan:${index}:${title}`.slice(0, 160) : ''
       });
       if (!ok) {
         await this.tasks.transition(task.id, 'failed', String(result?.error || 'step failed').slice(0, 160));
