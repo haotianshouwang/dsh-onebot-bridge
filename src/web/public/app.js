@@ -1265,10 +1265,22 @@ function autonomyView() {
   let body;
   if (ui.tab === 'diary') body = autonomyDiaryView(diaries, ui);
   else if (ui.tab === 'time') body = autonomyTimeView(time);
-  else if (ui.tab === 'settings') body = [autonomySettingsView(overview, draft), proactiveStatusView(state.data.proactive)];
+  else if (ui.tab === 'settings') body = [autonomySettingsView(overview, draft), proactiveStatusView(state.data.proactive), taskStatusView(state.data.tasks)];
   else if (ui.tab === 'secret') body = autonomySecretView(ui);
   else body = autonomyActivitiesView(activities, ui);
   return [head, stats, tabsRow, body];
+}
+
+function taskStatusView(tasks) {
+  if (!tasks) return card('自主任务状态', '任务存储尚未在当前宿主进程加载。', el('p', {class: 'empty'}, '重启宿主后这里会显示真实任务统计。'));
+  const latest = tasks.latest ? `${tasks.latest.goal} · ${tasks.latest.status}` : '尚无任务';
+  return card('自主任务状态', '任务状态来自持久化 TaskStore；创建计划不等于执行完成。',
+    el('div', {class: 'stat-grid'},
+      stat('任务总数', String(tasks.total || 0), '真实持久化记录'),
+      stat('活动任务', String(tasks.active || 0), '未完成或未取消'),
+      stat('等待授权', String(tasks.waitingApproval || 0), '需要明确授权'),
+      stat('失败任务', String(tasks.failed || 0), '可在任务详情重试')),
+    el('p', {class: 'section-note'}, '最近任务：' + latest + '。任务动作默认未启用，需在权限页启用 qq.task.* 后才能由模型调用。'));
 }
 
 function proactiveStatusView(status) {
