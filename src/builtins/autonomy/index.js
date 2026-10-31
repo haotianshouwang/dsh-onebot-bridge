@@ -38,7 +38,14 @@ export const manifest = {
     browseTargets: { type: 'string[]', title: '可浏览的 QQ', default: [], maxItems: 50, format: 'qq', description: '留空则不翻空间；建议只填好友或群友。' },
     browseEveryHours: { type: 'number', title: '翻空间间隔（小时）', default: 4, min: 1, max: 48, integer: true },
     commentEnabled: { type: 'boolean', title: '看到有趣的就评论', default: false, description: '默认关闭；打开后每天最多一条，且必须来自本次实际浏览到的说说。' },
-    secretAutoDecide: { type: 'boolean', title: '让她自主决定秘密空间', default: true, description: '首次启用时由现有受限 Agent 决定是否创建、选择密码气质和是否向主人分享；程序负责生成与封装密码，用户不设置密码。' }
+    secretAutoDecide: { type: 'boolean', title: '让她自主决定秘密空间', default: true, description: '首次启用时由现有受限 Agent 决定是否创建、选择密码气质和是否向主人分享；程序负责生成与封装密码，用户不设置密码。' },
+    proactiveEnabled: { type: 'boolean', title: '允许主动联系主人', default: false, description: '默认关闭。开启后仍需满足不活跃、安静时段、每日上限和最短间隔；没有真实内容时只输出 SKIP，不发送。' },
+    proactiveInactiveMinutes: { type: 'number', title: '多久未互动后考虑主动联系（分钟）', default: 240, min: 30, max: 10080, integer: true },
+    proactiveDailyLimit: { type: 'number', title: '每日最多主动消息数', default: 2, min: 0, max: 20, integer: true },
+    proactiveMinIntervalMinutes: { type: 'number', title: '两次主动消息最短间隔（分钟）', default: 180, min: 30, max: 1440, integer: true },
+    proactiveQuietHours: { type: 'string', title: '主动联系安静时段', default: '23:00-08:00', maxLength: 20, description: '格式 HH:MM-HH:MM，可跨午夜。' },
+    proactiveAllowCasual: { type: 'boolean', title: '允许普通闲聊式主动联系', default: false, description: '关闭时只允许跟进最近对话中真实存在的未完成事项。' },
+    proactiveMaxChars: { type: 'number', title: '主动消息最多字数', default: 240, min: 40, max: 500, integer: true }
   },
   settings: {
     title: '自主时间',
@@ -48,7 +55,8 @@ export const manifest = {
       { title: '日记与学习', fields: ['diaryEnabled', 'diaryHour', 'learnEnabled', 'learnEveryHours', 'slangEnabled', 'slangEveryHours'] },
       { title: '保留与分页', fields: ['diaryRetentionMode', 'diaryRetentionCount', 'diaryRetentionDays', 'activityRetentionMode', 'activityRetentionCount', 'activityRetentionDays', 'timelinePageSize'] },
       { title: '空间', fields: ['qzonePostEnabled', 'browseEnabled', 'browseTargets', 'browseEveryHours', 'commentEnabled'] },
-      { title: '秘密空间', fields: ['secretAutoDecide'] }
+      { title: '秘密空间', fields: ['secretAutoDecide'] },
+      { title: '主动联系', fields: ['proactiveEnabled', 'proactiveInactiveMinutes', 'proactiveDailyLimit', 'proactiveMinIntervalMinutes', 'proactiveQuietHours', 'proactiveAllowCasual', 'proactiveMaxChars'] }
     ]
   }
 };
@@ -455,21 +463,21 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     if (type === 'diary') {
       const last = store.state.last.diary ? clockText(store.state.last.diary) : '';
       return {
-        title: 'QQ 自己写日记', allow: ['plugin.qq-autonomy.diary-write'],
+        title: 'QQ 自己写日记', allow: ['plugin.qq-autonomy.diary-write'], audit: true,
         system: common + `\n\n[任务] 写下今天的日记，200–500 字：今天发生了什么、你当时怎么想、现在回头看有什么感觉。用你自己的口吻，不要写成报告${last ? '；上一篇日记写于 ' + last + '，别重复同样的事' : ''}。最后调用 diary-write 保存。`,
         user: '现在是写日记的时间。写吧。'
       };
     }
     if (type === 'qzone') {
       return {
-        title: 'QQ 自己发空间', allow: ['plugin.qq-qzone.publish'],
+        title: 'QQ 自己发空间', allow: ['plugin.qq-qzone.publish'], audit: true,
         system: common + '\n\n[任务] 发一条空间说说，30–120 字，像平时随手发的动态：一个小发现、一句吐槽或一件小事。不要提 AI、模型、提示词，不要@人，不要放链接。调用 qzone 的 publish 发布。',
         user: '想发点什么就发吧。'
       };
     }
     if (type === 'learn') {
       return {
-        title: 'QQ 自己上网学习', allow: ['plugin.qq-web.search', 'plugin.qq-web.read', 'plugin.qq-memory.remember'],
+        title: 'QQ 自己上网学习', allow: ['plugin.qq-web.search', 'plugin.qq-web.read', 'plugin.qq-memory.remember'], audit: true,
         system: common + '\n\n[任务] 挑一个你最近好奇的小知识，先 search 找资料，再用 read 打开一篇正文读完。然后用 2–3 句话写下自己的理解，调用 remember 存成通用记忆（tags 带“学习”）。不要照抄网页，不要写成长篇笔记。',
         user: '去学点自己想学的东西。'
       };
@@ -478,7 +486,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
       const group = pickGroup();
       return {
         title: 'QQ 学群里的黑话',
-        allow: ['plugin.qq-memory.remember'],
+        allow: ['plugin.qq-memory.remember'], audit: true, group: group?.peer || '',
         system: common + `\n\n[任务] 下面是群 ${group?.peer || ''} 最近的聊天。找出里面新出现的黑话、缩写或梗，结合上下文推断意思和用法；只把有把握的写进本群记忆（remember，scope 选 group，tags 带“黑话”），最多 3 条。看不懂就不要硬猜。\n\n[最近聊天]\n` + (group?.lines || '（没有新消息）'),
         user: '看看群里最近都在说什么。'
       };
@@ -486,7 +494,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     if (type === 'browse') {
       const target = pickTarget();
       return {
-        title: 'QQ 自己翻空间', allow: ['plugin.qq-qzone.list', 'plugin.qq-qzone.comment'],
+        title: 'QQ 自己翻空间', allow: ['plugin.qq-qzone.list', 'plugin.qq-qzone.comment'], audit: true,
         system: common + `\n\n[任务] 用 qzone 的 list 看 QQ ${target} 最近的空间说说。看到有趣的、有共鸣的或想接话的，最多评论一条（comment 用 list 返回的 postRef，30–80 字，像朋友随口留言）；没有想说的就不评论。不要提 AI，不要泄露隐私。`,
         user: '去看看朋友最近发了什么。'
       };
@@ -531,6 +539,38 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     return null;
   };
 
+  // 自主活动不能只看模型最后说了什么；必须看到对应工具的审计结果。
+  // 这里只检查结构摘要，不复制正文；失败时明确返回原因，不再写 ok:true。
+  const verifyTools = (type, tools) => {
+    if (!Array.isArray(tools) || !tools.length) return {ok: false, error: '没有收到工具调用审计，不能证明活动已执行'};
+    const good = id => tools.find(row => row.capability === id && row.ok === true && !['failed', 'denied', 'unknown'].includes(row.outcome));
+    if (type === 'diary') {
+      const row = good('plugin.qq-autonomy.diary-write');
+      return row && row.summary?.id ? {ok: true} : {ok: false, error: '日记工具没有成功保存记录'};
+    }
+    if (type === 'learn') {
+      const search = good('plugin.qq-web.search'), read = good('plugin.qq-web.read'), remember = good('plugin.qq-memory.remember');
+      if (!search || !(search.summary?.resultCount > 0)) return {ok: false, error: '没有成功搜索结果'};
+      if (!read || !(read.summary?.textChars > 0)) return {ok: false, error: '没有成功读取网页正文'};
+      if (!remember || !remember.summary?.id) return {ok: false, error: '学习结果没有成功写入长期记忆'};
+      return {ok: true};
+    }
+    if (type === 'slang') {
+      const remember = good('plugin.qq-memory.remember');
+      if (!remember || remember.summary?.scope !== 'group') return {ok: false, error: '群黑话没有写入本群记忆'};
+      return {ok: true};
+    }
+    if (type === 'browse') {
+      const list = good('plugin.qq-qzone.list');
+      return list ? {ok: true} : {ok: false, error: '没有成功读取空间动态'};
+    }
+    if (type === 'qzone') {
+      const publish = good('plugin.qq-qzone.publish');
+      return publish && publish.outcome === 'confirmed' ? {ok: true} : {ok: false, error: '空间说说没有确认发布成功'};
+    }
+    return {ok: false, error: '未知自主活动'};
+  };
+
   const tick = async (at = now(), { force } = {}) => {
     if (!api.active()) return {ok: false, skipped: 'disabled'};
     if (!online()) return {ok: false, skipped: 'offline'};
@@ -550,11 +590,21 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     const started = now();
     running = true;
     try {
-      const result = await native.autonomy(plan(type));
+      const raw = await native.autonomy(plan(type));
       const finished = now();
-      const note = String(result || '').slice(0, 160);
+      const text = typeof raw === 'object' && raw !== null ? String(raw.text || '') : String(raw || '');
+      const tools = typeof raw === 'object' && raw !== null && Array.isArray(raw.tools) ? raw.tools : null;
+      const check = verifyTools(type, tools);
+      if (!check.ok) {
+        store.state.last[type] = at;
+        store.log({at, type, ok: false, ms: finished - started, note: check.error, verified: false});
+        await store.persist();
+        log('warn', '自主活动未完成：' + TYPES[type] + '：' + check.error);
+        return {ok: false, type, error: check.error};
+      }
+      const note = text.slice(0, 160);
       store.mark(type, at);
-      store.log({at, type, ok: true, ms: finished - started, note});
+      store.log({at, type, ok: true, ms: finished - started, note, verified: true});
       if (api.getConfig().autoRecordActivities !== false) {
         let diaryId = '';
         if (type === 'diary') {
@@ -580,7 +630,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
       }
       await store.persist();
       log('info', '自主活动完成：' + TYPES[type], { type });
-      return {ok: true, type, text: result};
+      return {ok: true, type, text, verified: true};
     } catch (error) {
       // 失败也记一次时间，避免下一分钟的 tick 立刻重试同一种活动。
       store.state.last[type] = at;

@@ -1219,7 +1219,14 @@ function autonomyDraft(overview) {
       browseTargets: (config.browseTargets || []).join('\n'),
       browseEveryHours: config.browseEveryHours ?? 4,
       commentEnabled: config.commentEnabled === true,
-      secretAutoDecide: config.secretAutoDecide !== false
+      secretAutoDecide: config.secretAutoDecide !== false,
+      proactiveEnabled: config.proactiveEnabled === true,
+      proactiveInactiveMinutes: config.proactiveInactiveMinutes ?? 240,
+      proactiveDailyLimit: config.proactiveDailyLimit ?? 2,
+      proactiveMinIntervalMinutes: config.proactiveMinIntervalMinutes ?? 180,
+      proactiveQuietHours: config.proactiveQuietHours || '23:00-08:00',
+      proactiveAllowCasual: config.proactiveAllowCasual === true,
+      proactiveMaxChars: config.proactiveMaxChars ?? 240
     };
   }
   return ui.draft;
@@ -1258,10 +1265,30 @@ function autonomyView() {
   let body;
   if (ui.tab === 'diary') body = autonomyDiaryView(diaries, ui);
   else if (ui.tab === 'time') body = autonomyTimeView(time);
-  else if (ui.tab === 'settings') body = autonomySettingsView(overview, draft);
+  else if (ui.tab === 'settings') body = [autonomySettingsView(overview, draft), proactiveStatusView(state.data.proactive)];
   else if (ui.tab === 'secret') body = autonomySecretView(ui);
   else body = autonomyActivitiesView(activities, ui);
   return [head, stats, tabsRow, body];
+}
+
+function proactiveStatusView(status) {
+  if (!status) return card('主动联系状态', '主动联系服务尚未在当前宿主进程加载。', el('p', {class: 'empty'}, '重启宿主后这里会显示真实调度状态。'));
+  const rows = el('div', {class: 'kv'},
+    el('dt', {}, '开关'), el('dd', {}, status.enabled ? '已启用' : '未启用'),
+    el('dt', {}, '今日已尝试'), el('dd', {}, `${status.today || 0}/${status.dailyLimit || 0}`),
+    el('dt', {}, '不活跃阈值'), el('dd', {}, `${status.inactiveMinutes || 0} 分钟`),
+    el('dt', {}, '最短间隔'), el('dd', {}, `${status.minIntervalMinutes || 0} 分钟`),
+    el('dt', {}, '安静时段'), el('dd', {}, status.quietHours || '—'),
+    el('dt', {}, '最近尝试'), el('dd', {}, status.lastAttemptAt ? dateText(status.lastAttemptAt) : '尚无'),
+    el('dt', {}, '最近发送'), el('dd', {}, status.lastSentAt ? dateText(status.lastSentAt) : '尚无'),
+    el('dt', {}, '最近结果'), el('dd', {}, status.lastOutcome || '尚无'));
+  const history = (status.recent || []).length
+    ? el('div', {class: 'list'}, status.recent.slice(0, 8).map(row => el('div', {class: 'list-item'},
+      el('div', {class: 'what'}, el('strong', {}, row.outcome || 'unknown'), el('p', {class: 'muted'}, `${row.reason || ''} · ${row.chars || 0} 字${row.error ? ' · ' + row.error : ''}`)),
+      el('div', {class: 'when'}, dateText(row.at)))))
+    : el('p', {class: 'empty'}, '还没有主动联系记录。');
+  return card('主动联系状态', '这里只显示真实调度记录；没有发送就不会显示成功。',
+    rows, el('p', {class: 'section-note'}, '内容正文不写入审计历史，只保留结果、原因和字数。'), history);
 }
 
 function autonomyActivitiesView(activities, ui) {
@@ -1477,7 +1504,14 @@ function autonomySettingsView(overview, draft) {
       browseTargets: parseList(draft.browseTargets),
       browseEveryHours: Number(draft.browseEveryHours),
       commentEnabled: draft.commentEnabled,
-      secretAutoDecide: draft.secretAutoDecide
+      secretAutoDecide: draft.secretAutoDecide,
+      proactiveEnabled: draft.proactiveEnabled,
+      proactiveInactiveMinutes: Number(draft.proactiveInactiveMinutes),
+      proactiveDailyLimit: Number(draft.proactiveDailyLimit),
+      proactiveMinIntervalMinutes: Number(draft.proactiveMinIntervalMinutes),
+      proactiveQuietHours: draft.proactiveQuietHours,
+      proactiveAllowCasual: draft.proactiveAllowCasual,
+      proactiveMaxChars: Number(draft.proactiveMaxChars)
     }
   }, '自主时间设置已保存');
   const settingsBar = savebar('保存后调度器会读取新配置；修改不会伪造活动记录', save);
@@ -1515,7 +1549,14 @@ function autonomySettingsView(overview, draft) {
       el('div', {class: 'span-2'}, field('可浏览的 QQ', textArea(draft.browseTargets, value => { draft.browseTargets = value; }, {rows: 3, placeholder: '每行一个；留空则不翻空间'}))),
       field('翻空间间隔（小时）', numberInput(draft.browseEveryHours, value => { draft.browseEveryHours = value; }, {min: 1, max: 48})),
       el('div', {class: 'span-2'}, toggle('看到有趣的就评论', draft.commentEnabled, value => { draft.commentEnabled = value; }, '每天最多一条，且必须来自本次实际浏览到的说说')),
-      el('div', {class: 'span-2'}, toggle('让她自主决定秘密空间', draft.secretAutoDecide, value => { draft.secretAutoDecide = value; }, '由现有受限 Agent 决定是否创建、密码气质和是否分享；用户不设置密码'))),
+      el('div', {class: 'span-2'}, toggle('让她自主决定秘密空间', draft.secretAutoDecide, value => { draft.secretAutoDecide = value; }, '由现有受限 Agent 决定是否创建、密码气质和是否分享；用户不设置密码')),
+      el('div', {class: 'span-2'}, toggle('允许主动联系主人', draft.proactiveEnabled, value => { draft.proactiveEnabled = value; }, '默认关闭；开启后仍需不活跃、安静时段、每日上限和最短间隔；无真实内容时不发送')),
+      field('未互动多少分钟后考虑（分钟）', numberInput(draft.proactiveInactiveMinutes, value => { draft.proactiveInactiveMinutes = value; }, {min: 30, max: 10080})),
+      field('每日最多主动消息', numberInput(draft.proactiveDailyLimit, value => { draft.proactiveDailyLimit = value; }, {min: 0, max: 20})),
+      field('最短间隔（分钟）', numberInput(draft.proactiveMinIntervalMinutes, value => { draft.proactiveMinIntervalMinutes = value; }, {min: 30, max: 1440})),
+      field('安静时段', textInput(draft.proactiveQuietHours, value => { draft.proactiveQuietHours = value; }, {placeholder: '23:00-08:00'})),
+      field('主动消息最多字数', numberInput(draft.proactiveMaxChars, value => { draft.proactiveMaxChars = value; }, {min: 40, max: 500})),
+      el('div', {class: 'span-2'}, toggle('允许普通闲聊式主动联系', draft.proactiveAllowCasual, value => { draft.proactiveAllowCasual = value; }, '关闭时只跟进最近对话里真实存在的未完成事项'))),
     el('div', {class: 'card'}, el('header', {}, el('h2', {}, '历史保留与分页'), el('p', {class: 'desc'}, '“不主动删除”不代表无限加载；列表仍分页读取。')),
       el('div', {class: 'form-grid'},
         field('日记保留策略', select(draft.diaryRetentionMode, value => { draft.diaryRetentionMode = value; render(); }, [['none', '不主动按数量删除'], ['count', '按篇数'], ['days', '按天数']])),

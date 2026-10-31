@@ -194,6 +194,57 @@
       "title": "让她自主决定秘密空间",
       "default": true,
       "description": "首次启用时由现有受限 Agent 决定是否创建、选择密码气质和是否向主人分享；程序负责生成与封装密码，用户不设置密码。"
+    },
+    "proactiveEnabled": {
+      "type": "boolean",
+      "title": "允许主动联系主人",
+      "default": false,
+      "description": "默认关闭。开启后仍需满足不活跃、安静时段、每日上限和最短间隔；没有真实内容时只输出 SKIP，不发送。"
+    },
+    "proactiveInactiveMinutes": {
+      "type": "number",
+      "title": "多久未互动后考虑主动联系（分钟）",
+      "default": 240,
+      "min": 30,
+      "max": 10080,
+      "integer": true
+    },
+    "proactiveDailyLimit": {
+      "type": "number",
+      "title": "每日最多主动消息数",
+      "default": 2,
+      "min": 0,
+      "max": 20,
+      "integer": true
+    },
+    "proactiveMinIntervalMinutes": {
+      "type": "number",
+      "title": "两次主动消息最短间隔（分钟）",
+      "default": 180,
+      "min": 30,
+      "max": 1440,
+      "integer": true
+    },
+    "proactiveQuietHours": {
+      "type": "string",
+      "title": "主动联系安静时段",
+      "default": "23:00-08:00",
+      "maxLength": 20,
+      "description": "格式 HH:MM-HH:MM，可跨午夜。"
+    },
+    "proactiveAllowCasual": {
+      "type": "boolean",
+      "title": "允许普通闲聊式主动联系",
+      "default": false,
+      "description": "关闭时只允许跟进最近对话中真实存在的未完成事项。"
+    },
+    "proactiveMaxChars": {
+      "type": "number",
+      "title": "主动消息最多字数",
+      "default": 240,
+      "min": 40,
+      "max": 500,
+      "integer": true
     }
   },
   "settings": {
@@ -247,6 +298,18 @@
         "title": "秘密空间",
         "fields": [
           "secretAutoDecide"
+        ]
+      },
+      {
+        "title": "主动联系",
+        "fields": [
+          "proactiveEnabled",
+          "proactiveInactiveMinutes",
+          "proactiveDailyLimit",
+          "proactiveMinIntervalMinutes",
+          "proactiveQuietHours",
+          "proactiveAllowCasual",
+          "proactiveMaxChars"
         ]
       }
     ]

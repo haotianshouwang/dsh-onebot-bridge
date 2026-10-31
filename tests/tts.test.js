@@ -8,7 +8,7 @@ const msg=(extra={})=>({bot,user:owner,kind:'group',peer:group,key,id:'m1',...ex
 // 最小可识别的 MP3 头（ID3 + 一帧同步），足够通过核心的资源类型校验。
 const mp3=Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x64AAAAAAAA','latin1');
 
-async function setup(t,{synthesize}={}){
+async function setup(t,{synthesize,sendOutcome='confirmed'}={}){
  process.env.QQBOT_OWNER=owner;
  const dir=await mkdtemp(path.join(os.tmpdir(),'qq-tts-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -21,7 +21,7 @@ async function setup(t,{synthesize}={}){
  actions.invoke=async(id,args,c,signal)=>{
   if(id.startsWith('plugin.qq-tts.'))return originalInvoke(id,args,c,signal);
   invokes.push({id,args});
-  if(id==='qq.audio.send')return {outcome:'confirmed'};
+  if(id==='qq.audio.send')return {outcome:sendOutcome};
   throw new Error('unexpected invoke '+id);
  };
  const sdk=new PluginSDK({store,permissions,events,media,actions});
@@ -72,6 +72,17 @@ test('speak 合成后作为语音资源发送到当前聊天',async t=>{
  assert.equal(recent.length,1);
  assert.equal(recent[0].ok,true);
  assert.equal(recent[0].chars,10);
+});
+
+test('语音发送结果未知时不能声称已经发出',async t=>{
+ const x=await setup(t,{sendOutcome:'unknown'});x.enable();
+ const result=await x.actions.invoke('plugin.qq-tts.speak',{text:'测试语音'},x.context());
+ assert.equal(result.ok,false);
+ assert.equal(result.outcome,'unknown');
+ assert.match(result.instruction,/未确认|不要声称/);
+ const recent=x.store.data.framework.pluginData['qq-tts'].recent;
+ assert.equal(recent[0].ok,false);
+ assert.equal(recent[0].outcome,'unknown');
 });
 
 test('拒绝空文本与超长文本，并在冷却期内拒绝重复发送',async t=>{

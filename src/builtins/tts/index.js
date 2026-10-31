@@ -254,6 +254,7 @@ async function remember(api, context, entry, log) {
         for (const key of chatKeys.slice(0, chatKeys.length - 200)) delete cooldowns[key];
       }
       const row = { t: now, provider: entry.provider, voice: entry.voice, chars: entry.chars, ms: entry.ms, ok: entry.ok === true };
+      if (entry.outcome) row.outcome = String(entry.outcome).slice(0, 20);
       if (!entry.ok) row.error = String(entry.error || '').slice(0, 160);
       recent.unshift(row);
       return { schema: 1, cooldowns, recent: recent.slice(0, 20) };
@@ -297,16 +298,21 @@ export function activateTTS(framework, { synthesize = synthesizeVoice, log } = {
     if (signal.aborted) throw Object.assign(new Error('语音合成已取消'), { code: 'PLUGIN_CANCELLED' });
 
     const resource = await api.putResource(result.bytes, context, { purpose: 'audio', name: 'voice' });
+    let sent;
     try {
-      await api.invoke('qq.audio.send', { resourceId: resource.id }, context, signal);
+      sent = await api.invoke('qq.audio.send', { resourceId: resource.id }, context, signal);
     } catch (error) {
       await remember(api, context, { ok: false, provider: result.provider, voice: result.voice, chars, ms: Date.now() - started, error: '发送失败：' + error.message }, log);
       throw new Error('语音已合成，但发送失败：' + String(error.message || error).slice(0, 180));
     }
-    await remember(api, context, { ok: true, provider: result.provider, voice: result.voice, chars, ms: Date.now() - started }, log);
+    const outcome = sent?.outcome || 'unknown';
+    const confirmed = outcome === 'confirmed';
+    const accepted = outcome === 'accepted';
+    await remember(api, context, { ok: confirmed, outcome, provider: result.provider, voice: result.voice, chars, ms: Date.now() - started, ...(confirmed ? {} : { error: '发送结果：' + outcome }) }, log);
     return {
-      ok: true, provider: PROVIDER_LABEL[result.provider] || result.provider, voice: result.voice,
-      chars, seconds: result.seconds ?? null, instruction: '语音已经发出，不要重复发送同一段。'
+      ok: confirmed, outcome, accepted, provider: PROVIDER_LABEL[result.provider] || result.provider, voice: result.voice,
+      chars, seconds: result.seconds ?? null,
+      instruction: confirmed ? '语音已经发出，不要重复发送同一段。' : accepted ? '网关已受理语音，但尚未确认送达；不要声称已经确认收到。' : '语音发送结果未确认，不要声称已经发出。'
     };
   });
 

@@ -60,10 +60,12 @@ export function activateWeb(framework,{read=readPublic,download=safeDownload,now
   const bytes=await download(row.imageUrl,{signal,maxBytes:api.getConfig().imageMaxMB*1024*1024});
   const resource=await api.putResource(bytes,c,{purpose:'image',name:row.title});saved.rows.delete(a.imageId);if(!saved.rows.size)candidates.delete(candidateKey(c));
   const sent=await api.invoke('qq.image.send',{resourceId:resource.id},c,signal);
-  // 自动收藏：发了图之后按资源编号收进表情库。失败不影响发送结果。
-  if(typeof onStickerSent==='function'){try{await onStickerSent(resource.id,c,{name:row.title});}catch{}}
+  const outcome=sent?.outcome||'unknown',confirmed=outcome==='confirmed',accepted=outcome==='accepted';
+  // 自动收藏：发送已确认后才按资源编号收进表情库；失败不影响发送结果。
+  if(confirmed&&typeof onStickerSent==='function'){try{await onStickerSent(resource.id,c,{name:row.title});}catch{}}
   const showSource=api.getConfig().imageSourceLink===true;
-  return {imageId:a.imageId,title:row.title,...(showSource?{sourceUrl:row.sourceUrl}:{}),sent,resourceId:resource.id,instruction:(showSource?'可以说明已发送图片并附来源网页；图片内容与来源真实性仍需结合来源核实。':'可以简短说明已发送；不要输出图片网址、来源链接或站点名。')+'想把这张收进表情库时，把 resourceId 交给表情包的 save。'};
+  const sendNote=confirmed?'已确认发送；不要输出图片网址、来源链接或站点名。':accepted?'网关已受理图片，但尚未确认送达；不要说已经确认收到。':'图片发送结果未确认；不要声称已经发出。';
+  return {ok:confirmed,outcome,accepted,imageId:a.imageId,title:row.title,...(showSource?{sourceUrl:row.sourceUrl}:{}),sent,resourceId:resource.id,instruction:sendNote+(showSource?'可以附来源网页。':'')+'想把这张收进表情库时，把 resourceId 交给表情包的 save。'};
  }));
  return api;
 }

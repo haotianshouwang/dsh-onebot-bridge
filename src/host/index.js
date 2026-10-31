@@ -33,6 +33,8 @@ import {createAutonomyAdmin} from '../admin/autonomy-admin.js';
 import {validateProfile,chatSettings} from '../session/chat-profile.js';
 import {Uninstaller} from '../core/uninstall.js';
 import { Router } from '../session/router.js';
+import {ProactiveMessaging} from '../session/proactive.js';
+import {TaskStore} from '../session/tasks.js';
 import { Extensions,validateConfig } from '../extensions/index.js';
 import { Market } from '../market/index.js';
 import { validatePersona,resolvePersona,renderPersona,assertCanDelete,importPersona } from '../personas/index.js';
@@ -123,6 +125,8 @@ export async function apply(ctx,config) {
    activateMemory(sdk.facade(),{store:memory,log});
   }catch(error){log('error','长期记忆库不可用：'+error.message);memory=null;}
   const memoryAdmin=createMemoryAdmin({store:memory,getItem:()=>store.data.framework.nativePackages['qq-memory']});
+  const taskStore=await new TaskStore(path.join(store.dir,'tasks')).open();
+  actions.installTaskActions(taskStore);
   // 自主时间：定时问一次“现在要不要做点自己的事”，每次都在受限会话里完成。
   let autonomy=null,autonomyTimer=null;
   try{
@@ -150,6 +154,39 @@ export async function apply(ctx,config) {
     },
     log
   }).open():null;
+  // 主动联系：配置放在自主时间包，默认关闭；独立于“自主活动”的发送权限。
+  let proactive=null,proactiveTimer=null;
+  const proactiveKey=()=>{
+    const id=bot?.status?.bot,owner=store.data.framework.ownerQQ;
+    return id&&owner?id+':private:'+owner:'';
+  };
+  const sendProactive=async text=>{
+    const key=proactiveKey();if(!key)throw new Error('QQ 或主人账号未就绪');
+    const [botId,,peer]=key.split(':');
+    const msg={type:'message',bot:botId,kind:'private',peer,key,user:peer,id:'proactive-'+randomUUID(),time:Date.now()/1000,text:String(text),mentions:[],sender:'自己',parts:[]};
+    const execution=permissions.issue(msg,'proactive');
+    try{
+      return await actions.invoke('qq.message.send',{segments:[{type:'text',data:{text:String(text)}}]},execution);
+    }finally{permissions.close(execution);}
+  };
+  try{
+    proactive=await new ProactiveMessaging({
+      dir:path.join(store.dir,'proactive'),
+      config:()=>store.data.framework.nativePackages['qq-autonomy']?.config||{},
+      online:()=>bot?.status?.online===true,
+      available:()=>store.data.settings.enabled===true&&store.data.framework.paused!==true,
+      lastOwnerAt:()=>router.lastOwnerAt,
+      recent:()=>{
+        const key=proactiveKey();if(!key)return '';
+        return router.conversation.room(key).rows.slice(-12).map(row=>`${row.user}: ${row.text}`).join('\n');
+      },
+      compose:options=>native.compose(options),
+      send:sendProactive,
+      log
+    }).open();
+    proactiveTimer=setInterval(()=>{void proactive.tick().catch(error=>log('warn','主动联系调度失败：'+String(error?.message||error).slice(0,160)));},60000);
+    proactiveTimer.unref?.();
+  }catch(error){log('error','主动联系不可用：'+error.message);proactive=null;}
   // 独立管理站点：只监听本机，自带密码登录；启动失败只记日志，不影响 QQ 桥接。
   let admin=null;
   try{admin=await startAdminServer({
@@ -192,7 +229,7 @@ export async function apply(ctx,config) {
     if(store.data.settings.enabled)try{await bot.start();}catch(e){log('error','OneBot 启动失败：'+e.message);}
   }
   function snapshot(){
-    return {participation:router.participation.snapshot(),chatProfiles:store.data.chatProfiles,promptStatus:native.lastPromptCheck,presetStatus:native.presetStatus,mediaStatus:incoming.status,pluginPages:[...sdk.pageList(),...Object.entries(store.data.extensions).filter(([,p])=>p.manifest.hostApiVersion===2).map(([id,p])=>({id,native:false,title:p.manifest.settings?.title||p.manifest.name,description:p.manifest.settings?.description||p.manifest.description,sections:p.manifest.settings?.sections||[],...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})}))],framework:{...store.data.framework,pluginData:undefined,retiredSessions:store.data.framework.retiredSessions.map(({sessionId,archived,error})=>({sessionId,archived,error}))},builtins:builtins.list(),capabilities:actions.catalog(),systemDenied:SYSTEM_DENIED,eventState:events.snapshot(),revision:store.data.revision,diagnostics:router.diagnostics,settings:store.data.settings,tokenConfigured:Boolean(token),status:bot?.status,
+    return {participation:router.participation.snapshot(),chatProfiles:store.data.chatProfiles,promptStatus:native.lastPromptCheck,presetStatus:native.presetStatus,mediaStatus:incoming.status,proactive:proactive?.status?.()||null,tasks:taskStore.status(),pluginPages:[...sdk.pageList(),...Object.entries(store.data.extensions).filter(([,p])=>p.manifest.hostApiVersion===2).map(([id,p])=>({id,native:false,title:p.manifest.settings?.title||p.manifest.name,description:p.manifest.settings?.description||p.manifest.description,sections:p.manifest.settings?.sections||[],...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})}))],framework:{...store.data.framework,pluginData:undefined,retiredSessions:store.data.framework.retiredSessions.map(({sessionId,archived,error})=>({sessionId,archived,error}))},builtins:builtins.list(),capabilities:actions.catalog(),systemDenied:SYSTEM_DENIED,eventState:events.snapshot(),revision:store.data.revision,diagnostics:router.diagnostics,settings:store.data.settings,tokenConfigured:Boolean(token),status:bot?.status,
       personas:store.data.personas,personaDefaults:store.data.personaDefaults,bindings:store.data.bindings,
       sessions:store.data.sessions,nativePackages:Object.values(store.data.framework.nativePackages).map(p=>({...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})})),extensions:Object.values(store.data.extensions).map(p=>({...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})})),sources:store.data.sources,
       logs:store.data.logs.slice(-100),jobs:store.data.inbox.slice(-30).map(({persona,reply,flow,...j})=>({...j,batchCount:flow?.parts.length||1,message:{key:j.message.key,text:j.message.text.slice(0,120)}})),
@@ -475,6 +512,6 @@ export async function apply(ctx,config) {
       return Response.json({ok:true,value:await task});
     }catch(error){await store.persist().catch(()=>{});return Response.json({ok:false,error:String(error.message||error).replaceAll(token||'\0','[已隐藏]')},{status:400});}
   }});
-  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
+  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
   await sdk.pruneStorage();await market.start();await media.start();await extensions.start();await native.start();await connect();qzoneAdmin.startScheduler();log('info','QQ 桥接插件已就绪，数据目录：'+store.dir);
 }

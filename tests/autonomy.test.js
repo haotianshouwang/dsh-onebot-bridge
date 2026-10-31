@@ -17,13 +17,13 @@ async function setup(t,{at}={}){
  const sdk=new PluginSDK({store,permissions,events,media,actions});
  let clock={now:at??Date.now()};
  const calls=[];
- const native={autonomy:async plan=>{calls.push(plan);return '做完了，今天有点累。'}};
+ const native={autonomy:async plan=>{calls.push(plan);const tools=(plan.allow||[]).map(capability=>({capability,ok:true,outcome:capability==='plugin.qq-qzone.publish'?'confirmed':null,summary:{id:'tool-1',resultCount:1,textChars:10,itemCount:1,scope:capability==='plugin.qq-memory.remember'?'group':undefined}}));return {text:'做完了，今天有点累。',tools};}};
  const auto=await activateAutonomy(sdk.facade(),{dir:path.join(dir,'auto'),native,persona:()=>'你是测试人设。',online:()=>true,now:()=>clock.now});
  const item=store.data.framework.nativePackages['qq-autonomy'];
  item.enabled=true;item.scope={private:true,allUsers:false,users:[owner],groups:[group]};
  item.config={...auto.api.getConfig(),enabled:true,activeHours:'00:00-23:59',diaryEnabled:true,diaryHour:0,learnEnabled:false,slangEnabled:false,qzonePostEnabled:false,browseEnabled:false,maxRunsPerDay:8};
  t.after(()=>sdk.stop());
- return {dir,store,sdk,actions,item,auto,calls,setNow:value=>{clock.now=value;},context:(extra={})=>permissions.issue(msg(extra),'chat')};
+ return {dir,store,sdk,actions,item,auto,calls,native,setNow:value=>{clock.now=value;},context:(extra={})=>permissions.issue(msg(extra),'chat')};
 }
 
 test('时间工具：解析时段、跨午夜和星期文本',()=>{
@@ -71,6 +71,29 @@ test('到点写日记：走受限白名单、记录结果并注入时间',async 
  assert.match(time,/^\[现在\] 2026-10-31 22:30/);
  const page=await x.sdk.pageData('qq-autonomy',{});
  assert.equal(page.rows[0].type,'写日记');
+});
+
+test('自主活动没有工具审计时不能记为成功',async t=>{
+ const at=new Date(2026,9,31,22,30).getTime();
+ const x=await setup(t,{at});
+ x.native.autonomy=async()=>({text:'我写完了。',tools:[]});
+ const result=await x.auto.tick(at,{force:'diary'});
+ assert.equal(result.ok,false);
+ assert.match(result.error,/工具调用审计/);
+ assert.equal(x.auto.store.count('diary',at),0);
+ assert.equal(x.auto.store.state.log[0].ok,false);
+ assert.equal(x.auto.store.state.log[0].verified,false);
+});
+
+test('学黑话使用当前群上下文，群记忆才能写入',async t=>{
+ const at=new Date(2026,9,31,22,30).getTime();
+ const x=await setup(t,{at});
+ x.item.config.learnEnabled=false;x.item.config.slangEnabled=true;x.item.config.diaryEnabled=false;
+ x.auto.buffer.set(group,Array.from({length:6},(_,i)=>({at:at-60000+i,user:other,text:'群里的新说法'+i})));
+ const result=await x.auto.tick(at,{force:'slang'});
+ assert.equal(result.ok,true);
+ assert.equal(x.calls.at(-1).group,group);
+ assert.equal(x.calls.at(-1).audit,true);
 });
 
 test('不限制业务次数时仍受每分钟调度和活动开关约束',async t=>{

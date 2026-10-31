@@ -43,7 +43,7 @@ export class Router {
    const job=this.store.data.inbox.find(j=>j.id===c.key+':'+c.messageId);
    if(job&&!(job.message.interaction==='poke'&&job.message.pokeContinue===false)){const wake=job.message.interaction==='poke'?{poke:true}:this.wakes.get(job.id);this.replyGate.replied(job.message,wake,chatSettings(this.store,job.message),text);}
   };
-  this.gated=new Set();this.replyGate=new ReplyGate({continuations:store.data.continuations??={}});this.wakes=new Map();this.queues=new Map();this.contexts=new Map();this.rate=new Map();this.sendTail=Promise.resolve();this.stopped=false;this.boot=randomUUID();
+  this.gated=new Set();this.replyGate=new ReplyGate({continuations:store.data.continuations??={}});this.wakes=new Map();this.queues=new Map();this.contexts=new Map();this.rate=new Map();this.sendTail=Promise.resolve();this.stopped=false;this.lastOwnerAt=0;this.boot=randomUUID();
   this.eventActions=new EventActions(store,{bot:()=>this.bot,authorize:m=>this.reason(m,'interaction'),cooldowns:()=>this.actions?.pokeCooldowns});
   this.pokePackage=new PokePackage(store,{bot:()=>this.bot,access:m=>this.reason(m,'interaction'),canAI:()=>this.builtins.enabled('ai-chat'),deliver:m=>this.receive(m),pending:key=>this.queues.get(key),back:(e,valid)=>this.eventActions.poke(this.eventActions.issue(e,valid)),continued:m=>{this.replyGate.decide(m,chatSettings(this.store,m));this.replyGate.replied(m,{poke:true},chatSettings(this.store,m),'');},log});this.pokes=this.pokePackage.cooldowns;
   this.diagnostics={received:0,accepted:0,ignored:0,lastIncoming:null,recentIgnored:[]};
@@ -99,6 +99,7 @@ export class Router {
  }
  async receive(msg){
   if(this.stopped)return;this.diagnostics.received++;this.diagnostics.lastIncoming=new Date().toISOString();
+  if(this.isOwner(msg))this.lastOwnerAt=Date.now();
   const mode=this.classify(msg),reason=this.reason(msg,mode);
   // Fixed command packs may still reply with ordinary AI chat switched off.
   if(reason&&!(reason==='chat-disabled'&&await this.extensions.inbound(msg)!=null)){this.ignore(msg,reason);return;}

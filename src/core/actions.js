@@ -104,6 +104,39 @@ export class Actions {
   },{extension:true});
   registerExtended(this);
  }
+ installTaskActions(tasks){
+  if(!tasks)throw new Error('任务存储不可用');
+  if(this.tasks)return;
+  this.tasks=tasks;
+  const object=(properties,required=Object.keys(properties))=>({type:'object',properties,required,additionalProperties:false});
+  this.add('qq.task.create','创建一条持久化任务，记录目标、完成条件和计划。仅主人可用；创建不等于执行。',object({
+   goal:str('任务目标',500),reason:str('创建原因',300),completion:str('完成条件',300),
+   plan:{type:'array',maxItems:20,items:{type:'string',maxLength:300}},
+   maxSteps:{type:'integer',minimum:1,maximum:50}
+  },['goal']),async a=>tasks.create(a),{ownerOnly:true,mutating:true});
+  this.add('qq.task.list','列出持久化任务及真实状态；不会把计划当成已完成。',object({
+   status:{type:'string',enum:['','pending','analyzing','planning','waiting_approval','executing','verifying','done','failed','cancelled']},
+   limit:{type:'integer',minimum:1,maximum:100}
+  },[]),async a=>({items:tasks.list(a),stats:tasks.status()}),{ownerOnly:true});
+  this.add('qq.task.get','读取一条任务的计划、步骤、验证和历史。',object({id:str('任务 ID',100)},['id']),async a=>{
+   const task=tasks.get(a.id);if(!task)throw new Error('任务不存在');return {task};
+  },{ownerOnly:true});
+  this.add('qq.task.plan','修改尚未执行任务的计划；不会自动执行。',object({
+   id:str('任务 ID',100),steps:{type:'array',maxItems:50,items:{type:'string',maxLength:300}}
+  },['id','steps']),async a=>({task:await tasks.setPlan(a.id,a.steps)}),{ownerOnly:true,mutating:true});
+  this.add('qq.task.transition','按状态机推进任务；非法跳转会被拒绝。',object({
+   id:str('任务 ID',100),status:{type:'string',enum:['analyzing','planning','waiting_approval','executing','verifying','done','failed','cancelled']},note:str('状态说明',160)
+  },['id','status']),async a=>({task:await tasks.transition(a.id,a.status,a.note)}),{ownerOnly:true,mutating:true});
+  this.add('qq.task.step','给执行中的任务追加一个真实步骤结果。',object({
+   id:str('任务 ID',100),title:str('步骤',200),tool:str('工具',100),status:{type:'string',enum:['pending','running','done','failed','skipped']},outcome:str('结果摘要',200),note:str('备注',200)
+  },['id','title']),async a=>({step:await tasks.addStep(a.id,a)}),{ownerOnly:true,mutating:true});
+  this.add('qq.task.verify','给验证中的任务写入人工/程序验证结果。',object({
+   id:str('任务 ID',100),ok:{type:'boolean'},note:str('验证依据',300)
+  },['id','ok']),async a=>({task:await tasks.verify(a.id,a)}),{ownerOnly:true,mutating:true});
+  this.add('qq.task.attach-memory','把任务关联到一条真实记忆；不复制记忆正文。',object({
+   id:str('任务 ID',100),memoryId:str('记忆 ID',100)
+  },['id','memoryId']),async a=>({task:await tasks.attachMemory(a.id,a.memoryId)}),{ownerOnly:true,mutating:true});
+ }
  add(id,description,parameters,run,options={}){
   if(this.definitions.has(id))throw new Error('能力 ID 冲突');
   if(!parameters||parameters.type!=='object'||typeof parameters.properties!=='object')throw new Error('动作必须声明对象参数 Schema');

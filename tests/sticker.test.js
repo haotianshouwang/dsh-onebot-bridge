@@ -5,7 +5,7 @@ const bot='10000002',owner='10000001',other='12345678',group='88888',key=bot+':g
 const message=(extra={})=>({bot,user:owner,kind:'group',peer:group,key,id:'m1',...extra});
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
 
-async function setup(t,{search,bytes}={}){
+async function setup(t,{search,bytes,sendOutcome='confirmed'}={}){
  process.env.QQBOT_OWNER=owner;
  const dir=await mkdtemp(path.join(os.tmpdir(),'qq-sticker-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -21,7 +21,7 @@ async function setup(t,{search,bytes}={}){
   if(id.startsWith('plugin.qq-sticker.'))return originalInvoke(id,args,c,signal);
   invokes.push({id,args});
   if(id==='qq.media.receive')return {id:'res-1',mime:'image/png',name:'x'};
-  if(id==='qq.image.send')return {outcome:'confirmed'};
+  if(id==='qq.image.send')return {outcome:sendOutcome};
   if(id==='plugin.qq-web.search'){
    if(search==='fail')throw new Error('搜索服务不可用');
    return {provider:'Bing RSS',results:[{title:'表情含义',url:'https://example.com/a',snippet:'摘要'}]};
@@ -148,6 +148,15 @@ test('非图片内容会被拒绝收藏',async t=>{
  await assert.rejects(save(x,c),/只能收藏/);
  assert.equal(x.stickers.stats().count,0);
 });
+test('图片发送结果未知时不能声称已经发出',async t=>{
+ const x=await setup(t,{sendOutcome:'unknown'}),c=x.context();
+ const saved=await save(x,c,{name:'测试图'});
+ const sent=await x.actions.invoke('plugin.qq-sticker.send',{id:saved.sticker.id},c);
+ assert.equal(sent.ok,false);
+ assert.equal(sent.outcome,'unknown');
+ assert.match(sent.instruction,/未确认|不要声称/);
+});
+
 test('旧配置升级到 v2：去掉每日配额并补上自动收藏默认值',()=>{
  const old={configVersion:1,manifest:{...manifest,configVersion:1},config:{listLimit:8,savePerDay:60,meaningEnabled:true,maxStickers:300}};
  const config=migrateConfig(old,manifest);

@@ -135,9 +135,13 @@ export function activateSticker(framework, {stickers, readResource} = {}) {
   }, async (a, c, signal) => {
     const {row, bytes} = await stickers.read(a.id);
     const resource = await api.putResource(bytes, c, {purpose: 'image', name: row.name});
-    await api.invoke('qq.image.send', {resourceId: resource.id}, c, signal);
-    await stickers.touch(row.id);
-    return {ok: true, id: row.id, name: row.name, emotion: row.emotion || '', tags: row.tags, instruction: '已经发出去了，不要再重复发送同一个表情。'};
+    const sent = await api.invoke('qq.image.send', {resourceId: resource.id}, c, signal);
+    const outcome = sent?.outcome || 'unknown', confirmed = outcome === 'confirmed', accepted = outcome === 'accepted';
+    if (confirmed) await stickers.touch(row.id);
+    return {
+      ok: confirmed, outcome, accepted, id: row.id, name: row.name, emotion: row.emotion || '', tags: row.tags,
+      instruction: confirmed ? '已经发出去了，不要再重复发送同一个表情。' : accepted ? '网关已受理图片，但尚未确认送达；不要声称已经确认收到。' : '图片发送结果未确认，不要声称已经发出。'
+    };
   });
 
   api.action('explain', {

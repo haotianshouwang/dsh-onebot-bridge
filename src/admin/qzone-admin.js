@@ -59,7 +59,8 @@ export function createQzoneAdmin({backend, dir, getItem, friends, now = () => Da
   let status = {
     version: 2, lastAttempt: 0, lastSuccess: 0, lastError: '', lastFetched: 0, lastTarget: '',
     totalFetched: 0, lastSyncAt: 0, lastSyncError: '', syncInProgress: false, syncDone: 0, syncTotal: 0,
-    friendCount: 0, feedCount: 0, syncCursor: 0
+    friendCount: 0, feedCount: 0, syncCursor: 0,
+    scheduler: {startedAt: 0, lastTickAt: 0, lastAutoAt: 0, lastError: ''}
   };
   let feed = {version: 1, friends: [], posts: [], syncedAt: 0};
   let reads = [];
@@ -178,7 +179,13 @@ export function createQzoneAdmin({backend, dir, getItem, friends, now = () => Da
         syncTotal: status.syncTotal,
         friendCount: feed.friends.length,
         feedCount: feed.posts.length,
-        friendErrors: errors
+        friendErrors: errors,
+        scheduler: {
+          startedAt: iso(status.scheduler?.startedAt),
+          lastTickAt: iso(status.scheduler?.lastTickAt),
+          lastAutoAt: iso(status.scheduler?.lastAutoAt),
+          lastError: String(status.scheduler?.lastError || '')
+        }
       },
       capabilities: {
         list: true,
@@ -372,15 +379,18 @@ export function createQzoneAdmin({backend, dir, getItem, friends, now = () => Da
   function startScheduler() {
     if (timer) return;
     schedulerStopped = false;
+    status.scheduler = {...(status.scheduler || {}), startedAt: now(), lastTickAt: status.scheduler?.lastTickAt || 0, lastAutoAt: status.scheduler?.lastAutoAt || 0, lastError: ''};
     const tick = async () => {
       if (schedulerStopped) return;
+      status.scheduler.lastTickAt = now();
       const cfg = config();
       if (!cfg.autoSync || syncPromise || item().enabled !== true) return;
       const interval = Math.max(2, Math.min(1440, Number(cfg.syncIntervalMinutes) || 15)) * 60000;
       if (now() - lastAuto < interval) return;
       lastAuto = now();
-      try { await sync({reason: 'auto'}); }
-      catch (error) { log('warn', 'QQ 空间自动同步失败：' + String(error?.message || error).slice(0, 160)); }
+      status.scheduler.lastAutoAt = now();
+      try { await sync({reason: 'auto'}); status.scheduler.lastError = ''; }
+      catch (error) { status.scheduler.lastError = String(error?.message || error).slice(0, 160); log('warn', 'QQ 空间自动同步失败：' + status.scheduler.lastError); }
     };
     timer = setInterval(() => { void tick(); }, 60000);
     timer.unref?.();
