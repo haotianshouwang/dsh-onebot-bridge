@@ -92,19 +92,31 @@ test('自主学习必须有搜索、正文、来源和记忆写入',async t=>{
  x.native.autonomy=async()=>({text:'学到了一点。',tools:[
   {capability:'plugin.qq-web.search',ok:true,outcome:null,summary:{resultCount:2}},
   {capability:'plugin.qq-web.read',ok:true,outcome:null,summary:{textChars:120,url:'https://example.com/a'}},
+  {capability:'plugin.qq-web.read',ok:true,outcome:null,summary:{textChars:90,url:'https://example.org/b'}},
   {capability:'plugin.qq-memory.remember',ok:true,outcome:null,summary:{id:'mem-1',sourceUrl:'https://example.com/a'}}
  ]});
  assert.equal((await x.auto.tick(at,{force:'learn'})).ok,true);
  const missingSource=await setup(t,{at});
  missingSource.item.config.diaryEnabled=false;missingSource.item.config.slangEnabled=false;missingSource.item.config.learnEnabled=true;
  missingSource.native.autonomy=async()=>({text:'学到了。',tools:[
-  {capability:'plugin.qq-web.search',ok:true,summary:{resultCount:1}},
+  {capability:'plugin.qq-web.search',ok:true,summary:{resultCount:2}},
   {capability:'plugin.qq-web.read',ok:true,summary:{textChars:50,url:'https://example.com/a'}},
+  {capability:'plugin.qq-web.read',ok:true,summary:{textChars:40,url:'https://example.org/b'}},
   {capability:'plugin.qq-memory.remember',ok:true,summary:{id:'mem-1'}}
  ]});
  const failed=await missingSource.auto.tick(at,{force:'learn'});
  assert.equal(failed.ok,false);
  assert.match(failed.error,/来源网址/);
+ const oneSource=await setup(t,{at});
+ oneSource.item.config.diaryEnabled=false;oneSource.item.config.slangEnabled=false;oneSource.item.config.learnEnabled=true;
+ oneSource.native.autonomy=async()=>({text:'学到了。',tools:[
+  {capability:'plugin.qq-web.search',ok:true,summary:{resultCount:1}},
+  {capability:'plugin.qq-web.read',ok:true,summary:{textChars:50,url:'https://example.com/a'}},
+  {capability:'plugin.qq-memory.remember',ok:true,summary:{id:'mem-1',sourceUrl:'https://example.com/a'}}
+ ]});
+ const weak=await oneSource.auto.tick(at,{force:'learn'});
+ assert.equal(weak.ok,false);
+ assert.match(weak.error,/两个独立来源/);
 });
 
 test('学黑话使用当前群上下文，群记忆才能写入',async t=>{

@@ -119,6 +119,9 @@ test('联网学习记忆保留来源、发布时间、可信度和过期时间',
  assert.equal(row.expires_at,1800000000000);
  const recalled=await x.call('recall',{query:'公开资料'},c);
  assert.equal(recalled.items.find(item=>item.id===saved.id).sourceUrl,'https://example.com/article');
+ const old=await x.call('remember',{text:'一个已经过期的公开结论',sourceUrl:'https://example.com/old',expiresAt:1},c);
+ const oldRecall=await x.call('recall',{query:'过期公开结论'},c);
+ assert.equal(oldRecall.items.find(item=>item.id===old.id).expired,true);
 });
 
 test('recall 支持语义检索、记录使用次数并在没命中时明确为空',async t=>{

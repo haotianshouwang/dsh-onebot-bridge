@@ -478,7 +478,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     if (type === 'learn') {
       return {
         title: 'QQ 自己上网学习', allow: ['plugin.qq-web.search', 'plugin.qq-web.read', 'plugin.qq-memory.remember'], audit: true,
-        system: common + '\n\n[任务] 挑一个你最近好奇的小知识，先 search 找资料，再用 read 打开一篇正文读完。然后用 2–3 句话写下自己的理解，调用 remember 存成通用记忆（tags 带“学习”，sourceUrl 填实际打开过的 read 返回 URL，sourceTitle 填标题；有页面日期时填 publishedAt，confidence 只按证据强弱填 0–1）。不要照抄网页，不要写成长篇笔记。',
+        system: common + '\n\n[任务] 挑一个你最近好奇的小知识，先 search 找资料，再用 read 至少打开两个独立来源并比较。然后用 2–3 句话写下自己的理解，调用 remember 存成通用记忆（tags 带“学习”，sourceUrl 填实际打开过的 read 返回 URL，sourceTitle 填标题；有页面日期时填 publishedAt，confidence 只按证据强弱填 0–1）。来源矛盾时写明不确定；不要照抄网页，不要写成长篇笔记，不要用搜索摘要冒充正文。',
         user: '去学点自己想学的东西。'
       };
     }
@@ -549,11 +549,14 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
       return row && row.summary?.id ? {ok: true} : {ok: false, error: '日记工具没有成功保存记录'};
     }
     if (type === 'learn') {
-      const search = good('plugin.qq-web.search'), read = good('plugin.qq-web.read'), remember = good('plugin.qq-memory.remember');
+      const search = good('plugin.qq-web.search'), remember = good('plugin.qq-memory.remember');
+      const reads = tools.filter(row => row.capability === 'plugin.qq-web.read' && row.ok === true && row.summary?.textChars > 0);
+      const sources = [...new Set(reads.map(row => row.summary?.url).filter(Boolean))];
       if (!search || !(search.summary?.resultCount > 0)) return {ok: false, error: '没有成功搜索结果'};
-      if (!read || !(read.summary?.textChars > 0)) return {ok: false, error: '没有成功读取网页正文'};
+      if (sources.length < 2) return {ok: false, error: '自主学习至少需要读取两个独立来源'};
       if (!remember || !remember.summary?.id) return {ok: false, error: '学习结果没有成功写入长期记忆'};
       if (!remember.summary?.sourceUrl) return {ok: false, error: '学习结果没有记录来源网址'};
+      if (!sources.includes(remember.summary.sourceUrl)) return {ok: false, error: '学习记忆的来源不是本次实际读取的页面'};
       return {ok: true};
     }
     if (type === 'slang') {
