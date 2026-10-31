@@ -49,4 +49,7 @@ test('任务动作通过权限检查后可创建、推进、验证和查询', as
   assert.equal(taskEvents[0].reason, 'task');
   assert.equal(actions.definitions.get('core.status').riskLevel, 'A');
   assert.equal(actions.definitions.get('qq.task.create').riskLevel, 'C');
+  const dispose = actions.add('test.risk', 'test', {type: 'object', properties: {}}, async () => null, {ownerOnly: true, mutating: true, riskLevel: 'A'});
+  assert.equal(actions.definitions.get('test.risk').riskLevel, 'C');
+  dispose();
 });
