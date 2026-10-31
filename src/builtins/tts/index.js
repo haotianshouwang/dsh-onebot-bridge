@@ -61,8 +61,11 @@ const LOCAL_SCRIPT = `param(
   [int]$Volume = 100
 )
 $ErrorActionPreference = 'Stop'
+$debug = $OutFile + '.debug'
 try {
+  Add-Content -Path $debug -Value 'start' -Encoding UTF8
   Add-Type -AssemblyName System.Speech
+  Add-Content -Path $debug -Value 'speech-loaded' -Encoding UTF8
   $text = [System.IO.File]::ReadAllText($TextPath, [System.Text.Encoding]::UTF8)
   if ([string]::IsNullOrWhiteSpace($text)) { throw '语音文本为空' }
   $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -74,14 +77,18 @@ try {
         throw ('未安装音色「' + $Voice + '」，可用音色：' + $names)
       }
       $synth.SelectVoice($Voice)
+      Add-Content -Path $debug -Value 'voice-selected' -Encoding UTF8
     }
     $synth.Rate = $Rate
     $synth.Volume = $Volume
     $format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(24000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
     $synth.SetOutputToWaveFile($OutFile, $format)
+    Add-Content -Path $debug -Value 'output-set' -Encoding UTF8
     $synth.Speak($text)
+    Add-Content -Path $debug -Value 'spoken' -Encoding UTF8
   } finally { $synth.Dispose() }
 } catch {
+  Add-Content -Path $debug -Value ('error: ' + $_.Exception.Message) -Encoding UTF8
   try { [System.IO.File]::WriteAllText($ErrorFile, $_.Exception.Message, (New-Object System.Text.UTF8Encoding($false))) } catch {}
   exit 1
 }`;
@@ -148,18 +155,25 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
     const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
       '-TextPath', textFile, '-OutFile', wavFile, '-ErrorFile', errorFile, '-Rate', String(rate), '-Volume', String(volume)];
     if (selected) args.push('-Voice', selected);
+    let runResult;
     try {
-      await run(String(config.powershellPath || 'powershell.exe'), args, { timeoutMs: 12000, signal, label: '本地语音合成' });
+      runResult = await run(String(config.powershellPath || 'powershell.exe'), args, { timeoutMs: 12000, signal, label: '本地语音合成' });
     } catch (error) {
       if (signal?.aborted || error.code === 'PLUGIN_CANCELLED') throw error;
       // PowerShell 5.1 的中文错误经 stderr 会乱码；脚本另外写了 UTF-8 错误文件。
       const detail = await readFile(errorFile, 'utf8').catch(() => '');
       throw detail.trim() ? new Error(detail.trim().slice(0, 220)) : error;
     }
-    const wav = await stat(wavFile).catch(() => null);
+    let wav = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      wav = await stat(wavFile).catch(() => null);
+      if (wav && wav.size >= 100) break;
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 120));
+    }
     if (!wav || wav.size < 100) {
       const detail = await readFile(errorFile, 'utf8').catch(() => '');
-      throw new Error(String(detail).trim().slice(0, 220) || '本地语音没有生成音频');
+      const size = wav?.size ?? 0;
+      throw new Error(String(detail).trim().slice(0, 220) || String(runResult?.stderr || '').trim().slice(0, 220) || ('本地语音没有生成音频数据（WAV ' + size + ' 字节）；宿主进程可能需要桌面/音频会话，真实 QQ TTS 未完成'));
     }
     const seconds = wavSeconds(wav.size);
     const maxSeconds = Math.min(300, Math.max(5, Number(config.maxSeconds) || 60));
