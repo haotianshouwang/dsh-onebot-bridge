@@ -605,14 +605,19 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
       if (type === 'learn') {
         // 两阶段：先只允许 search/read，确认两个独立来源后才允许 remember，
         // 避免“验证失败但记忆已经写入”的副作用。
-        const discovery = plan(type);
-        discovery.allow = ['plugin.qq-web.search', 'plugin.qq-web.read'];
-        discovery.timeoutMs = 120000;
-        discovery.system += '\n\n这一阶段只做资料阅读：不要写记忆、不要调用 remember；完成至少两个独立来源的正文读取后，用简短文字说明要点和差异。';
-        discovery.user = '先阅读两个独立来源，不要写记忆。';
-        const first = await native.autonomy(discovery);
-        const reads = (first.tools || []).filter(row => row.capability === 'plugin.qq-web.read' && row.ok === true && row.summary?.textChars > 0 && row.summary?.url);
-        const sources = [...new Set(reads.map(row => row.summary.url))];
+        let first = {text: '', tools: []};
+        let sources = [];
+        for (let pass = 0; pass < 2 && sources.length < 2; pass++) {
+          const discovery = plan(type);
+          discovery.allow = ['plugin.qq-web.search', 'plugin.qq-web.read'];
+          discovery.timeoutMs = 120000;
+          discovery.system += '\n\n这一阶段只做资料阅读：不要写记忆、不要调用 remember；完成至少两个独立来源的正文读取后，用简短文字说明要点和差异。' + (pass ? '\n上一次只读到一个来源，这次必须继续搜索并读取另一个不同 URL 的正文；不要在只读一个来源时结束。' : '');
+          discovery.user = pass ? '继续读第二个独立来源。' : '先阅读两个独立来源，不要写记忆。';
+          const part = await native.autonomy(discovery);
+          const reads = (part.tools || []).filter(row => row.capability === 'plugin.qq-web.read' && row.ok === true && row.summary?.textChars > 0 && row.summary?.url);
+          sources = [...new Set([...sources, ...reads.map(row => row.summary.url)])];
+          first = {text: [first.text, part.text].filter(Boolean).join('\n').slice(0, 6000), tools: [...(first.tools || []), ...(part.tools || [])]};
+        }
         if (sources.length < 2) throw new Error('自主学习至少需要读取两个独立来源');
         const sourceText = sources.map((url, index) => `${index + 1}. ${url}`).join('\n');
         const second = await native.autonomy({
