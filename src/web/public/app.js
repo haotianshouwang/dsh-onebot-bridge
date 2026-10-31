@@ -1822,6 +1822,21 @@ function memoryDraft(overview) {
   return ui.draft;
 }
 
+async function openExpiredMemories() {
+  try {
+    const data = await secureApi('memoryAdmin', {op: 'expired', limit: 50});
+    const rows = data.items || [];
+    const body = rows.length
+      ? el('div', {class: 'list'}, rows.map(row => el('div', {class: 'list-item'},
+        el('div', {class: 'what'}, String(row.text || '').slice(0, 180), el('small', {class: 'mono'}, row.sourceUrl || '无来源')),
+        el('div', {class: 'when'}, row.expiresAt ? '过期于 ' + dateText(new Date(row.expiresAt).toISOString()) : '已过期'))))
+      : el('p', {class: 'muted'}, '当前没有过期记忆。');
+    openModal('过期记忆', '只列出过期记录，不会自动联网复查或修改。', body, [button('关闭', closeModal, {ghost: true})]);
+  } catch (error) {
+    openModal('过期记忆', '', el('p', {class: 'notice danger'}, formatError(error)), [button('关闭', closeModal, {ghost: true})]);
+  }
+}
+
 function memoryView() {
   const ui = uiFor('memory');
   ui.tab ||= 'list';
@@ -1838,6 +1853,7 @@ function memoryView() {
   ], [
     pluginEnableToggle(overview, 'memory', 'qq-memory'),
     button('返回插件', () => go('plugins'), {ghost: true}),
+    ...(overview.stats.expired ? [button('查看过期', openExpiredMemories, {ghost: true})] : []),
     button('新建记忆', openMemoryCreate, {primary: true, icon: 'plus'}),
     button('刷新', () => { pageCache.delete('memory'); loadPage('memory', pageLoaders.memory, {force: true}); }, {ghost: true, icon: 'refresh'})
   ]);
