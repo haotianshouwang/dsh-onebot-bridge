@@ -21,7 +21,8 @@ export class PluginSDK {
   const p=this.store.data.framework.nativePackages[id],controller=new AbortController(),lease={alive:true,signal:controller.signal,stage,generation:this.store.data.framework.generation};
   try{const result=await limited(()=>this.calls.run(lease,()=>work(controller.signal)),timeout,controller);p.health={...p.health,consecutive:0,lastSuccess:new Date().toISOString()};return result;}
   catch(e){
-   if(['PLUGIN_INPUT','PLUGIN_CANCELLED'].includes(e.code))throw e;
+   // 配额、参数错误、取消、网关已受理/结果未知都是预期结果，不能把插件隔离。
+   if(['PLUGIN_INPUT','PLUGIN_CANCELLED','QUOTA','ACCEPTED','UNKNOWN_OUTCOME'].includes(e.code))throw e;
    const count=(p.health?.consecutive||0)+1;p.error=String(e.message||e).slice(0,350);p.health={...p.health,consecutive:count,lastError:p.error,stage,at:new Date().toISOString(),totalErrors:(p.health?.totalErrors||0)+1,quarantined:count>=3||p.health?.quarantined===true};
    if(p.health.quarantined){p.enabled=false;this.changed({reason:'quarantine',plugin:id});}await this.store.persist();throw e;
   }finally{lease.alive=false;controller.abort();}
