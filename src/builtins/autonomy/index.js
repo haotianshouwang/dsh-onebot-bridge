@@ -607,7 +607,17 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
         // 避免“验证失败但记忆已经写入”的副作用。
         let first = {text: '', tools: []};
         let sources = [];
-        for (let pass = 0; pass < 2 && sources.length < 2; pass++) {
+        if (typeof native.learnSources === 'function') {
+          // 学习优先用确定的“搜索 + 两个正文”路径，避免模型只读一篇和触发更多配额。
+          const direct = await native.learnSources('今天值得了解的科学知识');
+          if (direct?.ok === true && direct.sources?.length >= 2) {
+            sources = direct.sources.map(source => source.url);
+            first = {text: direct.sources.map(source => `${source.title || source.url}\n${source.text}`).join('\n').slice(0, 8000), tools: direct.tools || []};
+          } else if (direct?.tools?.length) {
+            first.tools = direct.tools;
+          }
+        }
+        if (sources.length < 2) for (let pass = 0; pass < 2 && sources.length < 2; pass++) {
           const discovery = plan(type);
           discovery.allow = ['plugin.qq-web.search', 'plugin.qq-web.read'];
           discovery.timeoutMs = 120000;
