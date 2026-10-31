@@ -85,12 +85,13 @@ try {
   }
   $voice.Rate = $Rate
   $voice.Volume = $Volume
-  $stream = New-Object -ComObject SAPI.SpFileStream
-  $stream.Open($OutFile, 3, $false)
+  $stream = New-Object -ComObject SAPI.SpMemoryStream
   $voice.AudioOutputStream = $stream
   Add-Content -Path $debug -Value 'output-set' -Encoding UTF8
   $voice.Speak($text)
-  Add-Content -Path $debug -Value 'spoken' -Encoding UTF8
+  $bytes = $stream.GetData()
+  [System.IO.File]::WriteAllBytes($OutFile, $bytes)
+  Add-Content -Path $debug -Value ('spoken; bytes=' + $bytes.Length) -Encoding UTF8
 } catch {
   Add-Content -Path $debug -Value ('error: ' + $_.Exception.Message) -Encoding UTF8
   try { [System.IO.File]::WriteAllText($ErrorFile, $_.Exception.Message, (New-Object System.Text.UTF8Encoding($false))) } catch {}
@@ -147,6 +148,25 @@ export function wavSeconds(bytes) {
   return Math.round((data / (24000 * 2)) * 10) / 10;
 }
 
+function wrapPcmAsWav(pcm, sampleRate = 22050, channels = 1, bits = 16) {
+  const header = Buffer.alloc(44);
+  const blockAlign = channels * bits / 8;
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * blockAlign, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bits, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
 export async function synthesizeLocal(text, config, { signal, voice, run = runProcess } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'qq-tts-'));
   const textFile = path.join(dir, 'text.txt'), wavFile = path.join(dir, 'voice.wav'),
@@ -180,6 +200,12 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
       const detail = await readFile(errorFile, 'utf8').catch(() => '');
       const size = wav?.size ?? 0;
       throw new Error(String(detail).trim().slice(0, 220) || String(runResult?.stderr || '').trim().slice(0, 220) || ('本地语音没有生成音频数据（WAV ' + size + ' 字节）；宿主进程可能需要桌面/音频会话，真实 QQ TTS 未完成'));
+    }
+    let wavBytes = await readFile(wavFile);
+    if (wavBytes.subarray(0, 4).toString('ascii') !== 'RIFF') {
+      wavBytes = wrapPcmAsWav(wavBytes);
+      await writeFile(wavFile, wavBytes, {mode: 0o600});
+      wav = {size: wavBytes.length};
     }
     const seconds = wavSeconds(wav.size);
     const maxSeconds = Math.min(300, Math.max(5, Number(config.maxSeconds) || 60));
