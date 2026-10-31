@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 
 export const TASK_STATUSES = ['pending', 'analyzing', 'planning', 'waiting_approval', 'executing', 'verifying', 'done', 'failed', 'cancelled'];
+export const VERIFICATION_METHODS = ['manual', 'steps', 'tool', 'readback'];
 const TRANSITIONS = {
   pending: ['analyzing', 'cancelled'],
   analyzing: ['planning', 'failed', 'cancelled'],
@@ -36,6 +37,11 @@ export class TaskStore {
       const raw = JSON.parse(await readFile(this.file, 'utf8'));
       if (Array.isArray(raw?.tasks)) this.tasks = raw.tasks.filter(row => row && TASK_STATUSES.includes(row.status)).slice(0, this.maxTasks);
       else if (Array.isArray(raw)) this.tasks = raw.filter(row => row && TASK_STATUSES.includes(row.status)).slice(0, this.maxTasks);
+      for (const task of this.tasks) {
+        if (!VERIFICATION_METHODS.includes(task.verificationMethod)) task.verificationMethod = 'manual';
+        if (!task.verificationSpec || typeof task.verificationSpec !== 'object' || Array.isArray(task.verificationSpec)) task.verificationSpec = {};
+        if (typeof task.idempotencyKey !== 'string') task.idempotencyKey = '';
+      }
     } catch (error) {
       if (error.code !== 'ENOENT') this.corrupt = true;
     }
@@ -57,10 +63,18 @@ export class TaskStore {
     return this.tasks.find(row => row.id === String(id)) || null;
   }
 
-  async create({goal, reason = '', completion = '', plan = [], maxSteps = 20, budgetMs = 0} = {}) {
+  async create({goal, reason = '', completion = '', plan = [], maxSteps = 20, budgetMs = 0, verificationMethod = 'manual', verificationSpec = {}, idempotencyKey = ''} = {}) {
     const title = clean(goal, 500);
     if (!title) throw new Error('任务目标不能为空');
     if (this.tasks.length >= this.maxTasks) throw new Error('任务数量已达到上限，请先清理旧任务');
+    const method = VERIFICATION_METHODS.includes(verificationMethod) ? verificationMethod : 'manual';
+    if (method === 'tool' && !clean(verificationSpec?.capability, 100)) throw new Error('tool 验证必须声明 capability');
+    if (method === 'readback' && !clean(verificationSpec?.capability, 100)) throw new Error('readback 验证必须声明 capability');
+    const key = clean(idempotencyKey, 200);
+    if (key) {
+      const existing = this.tasks.find(task => task.idempotencyKey === key);
+      if (existing) return existing;
+    }
     const at = this.now();
     const steps = (Array.isArray(plan) ? plan : []).map(item => clean(item, 300)).filter(Boolean).slice(0, 20);
     const task = {
@@ -77,6 +91,9 @@ export class TaskStore {
       maxRetries: 2,
       maxSteps: Math.max(1, Math.min(50, Number(maxSteps) || 20)),
       budgetMs: Math.max(0, Math.min(86400000, Number(budgetMs) || 0)),
+      verificationMethod: method,
+      verificationSpec: verificationSpec && typeof verificationSpec === 'object' ? structuredClone(verificationSpec) : {},
+      idempotencyKey: key,
       verification: null,
       memoryIds: [],
       history: [{at, from: '', to: 'pending', note: 'created'}]
@@ -92,6 +109,7 @@ export class TaskStore {
     if (!task) throw new Error('任务不存在');
     if (!TASK_STATUSES.includes(to)) throw new Error('任务状态无效');
     if (!TRANSITIONS[task.status]?.includes(to)) throw new Error(`任务不能从 ${task.status} 转为 ${to}`);
+    if (to === 'done' && task.verification?.ok !== true) throw new Error('任务完成条件尚未验证，不能进入 done');
     const at = this.now(), from = task.status;
     task.status = to;
     task.updatedAt = at;

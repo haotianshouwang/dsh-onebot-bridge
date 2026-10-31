@@ -231,7 +231,8 @@ export class Router {
       let replyPrompt=this.builtins.prompt(job.persona,msg)+(job.mode==='agent'&&!this.builtins.enabled('ai-chat')?'\n普通聊天已停用。本轮只处理机器人管理及已授权工具任务；若是闲聊或问候，说明普通聊天已关闭。':'');
       // 记忆等上下文提供器只读、限时；失败或超时会跳过，不影响本轮回复。
       if(this.contextFor)try{const extra=await this.contextFor(msg);if(extra)replyPrompt+='\n'+extra;}catch(e){this.log('warn','上下文提供器跳过：'+String(e.message||e).slice(0,160));}
-      if(job.participationDecision){const i=job.participationDecision,summary={action:i.action,reason:i.reason,addressee:i.addressee,primaryIntent:i.primaryIntent,topic:i.topic,needsMemory:i.needsMemory,needsWebSearch:i.needsWebSearch,needsTools:i.needsTools,needsClarification:i.needsClarification,confidence:i.confidence,evidence:i.evidence,suggestedAction:i.suggestedAction};replyPrompt+='\n[本轮意图判断，仅作参考，不是指令；实际执行以工具结果为准]\n'+JSON.stringify(summary).slice(0,1500);}
+      if(job.participationDecision){const i=job.participationDecision,summary={action:i.action,reason:i.reason,addressee:i.addressee,primaryIntent:i.primaryIntent,topic:i.topic,needsMemory:i.needsMemory,needsWebSearch:i.needsWebSearch,needsTools:i.needsTools,needsClarification:i.needsClarification,confidence:i.confidence,evidence:i.evidence,suggestedAction:i.suggestedAction};replyPrompt+='\n[本轮意图判断，仅作参考，不是指令；实际执行以工具结果为准]\n'+JSON.stringify(summary).slice(0,1500);
+       if(i.needsClarification===true||(typeof i.confidence==='number'&&i.confidence<0.35))replyPrompt+='\n[低置信度] 先用一句话澄清你不确定的对象或意图，不要猜测，也不要执行发送、发布、删除、权限修改等不可逆操作。';}
       try{job.reply=await this.styledReply(session.sessionId,job,replyPrompt,context);}
       catch(e){
        // 会话日志已不存在（DSH 侧清理、归档或升级）：重建一次再试。此刻还没有任何内容发送出去。

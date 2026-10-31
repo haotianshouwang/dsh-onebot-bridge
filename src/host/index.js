@@ -192,12 +192,48 @@ export async function apply(ctx,config) {
   // 有限任务执行器：只在主人开启 taskRunnerEnabled 后推进已存在的 planning/executing 任务。
   let taskRunner=null,taskRunnerTimer=null;
   const taskRunnerTools=['plugin.qq-web.search','plugin.qq-web.read','plugin.qq-web.image-search','plugin.qq-memory.recall','plugin.qq-memory.remember','qq.history.get','qq.group.info','qq.members.list','qq.message.get','core.status'];
+  const verifyTask=async({task})=>{
+    const method=task?.verificationMethod||'manual',spec=task?.verificationSpec||{};
+    if(method==='manual')return {ok:false,note:'需要人工验证'};
+    if(method==='steps'){
+      const missing=(task.plan||[]).filter((_,index)=>!task.steps.some(step=>step.index===index+1&&step.status==='done'&&String(step.tool||'').trim()));
+      return missing.length?{ok:false,note:'计划步骤缺少成功工具记录：'+(missing.length)}:{ok:true,note:'所有计划步骤均有成功工具记录'};
+    }
+    if(method==='tool'){
+      const capability=String(spec.capability||''),expected=String(spec.outcome||'');
+      const rows=task.steps.filter(step=>step.status==='done'&&String(step.tool||'').split(',').includes(capability));
+      if(!rows.length)return {ok:false,note:'没有找到指定工具的成功记录'};
+      if(expected&&!rows.some(step=>String(step.outcome||'').includes(expected)))return {ok:false,note:'工具结果不符合期望'};
+      return {ok:true,note:'指定工具记录满足条件'};
+    }
+    if(method==='readback'){
+      const capability=String(spec.capability||''),owner=store.data.framework.ownerQQ,botId=bot?.status?.bot;
+      if(!owner||!botId)return {ok:false,note:'无法建立回读上下文'};
+      const cap=actions.definitions.get(capability);
+      if(!cap)return {ok:false,note:'回读动作不存在'};
+      let args={};
+      if(spec.args){try{args=typeof spec.args==='string'?JSON.parse(spec.args):spec.args;}catch{return {ok:false,note:'回读参数不是合法 JSON'};}}
+      const msg={type:'message',bot:botId,kind:'private',peer:owner,key:botId+':private:'+owner,user:owner,id:'verify-'+Date.now(),time:Date.now()/1000,text:'任务回读验证',mentions:[],sender:'自己',parts:[]};
+      const context=permissions.issue(msg,'autonomy');
+      try{
+        const reason=permissions.decision(cap,context);if(reason)return {ok:false,note:'回读权限不足：'+reason};
+        const result=await actions.invoke(capability,args,context);
+        const value=String(spec.path||'').split('.').filter(Boolean).reduce((current,key)=>current==null?undefined:current[key],result);
+        const expected=String(spec.equals??'');
+        return {ok:String(value??'')===expected,note:'回读 '+capability+'='+String(value??'').slice(0,120)};
+      }catch(error){return {ok:false,note:'回读失败：'+String(error?.message||error).slice(0,160)};}
+      finally{permissions.close(context);}
+    }
+    return {ok:false,note:'未知验证方式'};
+  };
   if(taskStore&&typeof native.autonomy==='function')try{
     taskRunner=new TaskRunner({
       tasks:taskStore,
       enabled:()=>store.data.framework.nativePackages['qq-autonomy']?.config?.taskRunnerEnabled===true,
       now:()=>Date.now(),
       log,
+      verifyTask,
+      onDone:task=>actions.onTaskEvent?.({reason:'task',title:task.goal,summary:task.verification?.note||task.completion||''}),
       executeStep:async({task,index,title,completion})=>{
         const persona=renderPersona(resolvePersona(store.data,'',bot?.status?.bot||''),{kind:'private'}).slice(0,4000);
         const raw=await native.autonomy({

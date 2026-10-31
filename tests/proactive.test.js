@@ -88,6 +88,21 @@ test('任务完成事件在允许时优先触发；关闭时只拒绝入队', as
   assert.equal(off.sent.length, 0);
 });
 
+test('重复事件不会重复入队，重启后频率记录仍然保留', async t => {
+  const x = await setup(t, {proactiveAllowTask: true});
+  assert.equal(await x.p.notify({reason: 'task', title: '查资料', summary: '两个来源一致'}), true);
+  assert.equal(await x.p.notify({reason: 'task', title: '查资料', summary: '两个来源一致'}), false);
+  assert.equal(x.p.status().pending, 1);
+  await x.p.tick();
+  const reopened = await new ProactiveMessaging({
+    dir: x.p.dir, config: () => x.item.config, online: () => true,
+    lastOwnerAt: () => x.now() - 2 * 3600000, recent: () => '主人: 今天有点累',
+    compose: async () => '第二次不同内容', send: async () => ({outcome: 'confirmed'}), now: x.now, log: () => {}
+  }).open();
+  assert.equal(reopened.status().today, 1);
+  assert.equal(reopened.status().lastOutcome, 'confirmed');
+});
+
 test('安静时段、每日上限和关闭开关都不发送', async t => {
   const quiet = await setup(t, {proactiveQuietHours: '12:00-13:00'});
   assert.equal((await quiet.p.tick()).skipped, 'quiet');

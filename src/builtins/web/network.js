@@ -67,11 +67,22 @@ export function searchResults(xml,count=5){
   if(seen.has(url))continue;seen.add(url);rows.push({title:plain(field(item,'title')).slice(0,250),url,snippet:plain(field(item,'description')).slice(0,700)});if(rows.length>=count)break;
  }return rows;
 }
+function pageDate(body){
+ const patterns=[
+  /<meta\b[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i,
+  /<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']article:published_time["']/i,
+  /<meta\b[^>]*name=["'](?:date|pubdate|publish-date)["'][^>]*content=["']([^"']+)["']/i,
+  /<time\b[^>]*datetime=["']([^"']+)["']/i,
+  /"datePublished"\s*:\s*"([^"]+)"/i
+ ];
+ for(const pattern of patterns){const raw=pattern.exec(body)?.[1];if(!raw)continue;const value=Date.parse(raw);if(Number.isFinite(value))return value;}
+ return 0;
+}
 export function article(page,maxChars=10000){
  const title=plain(/<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(page.body)?.[1]||'');
  const body=/text\/plain/.test(page.contentType)?page.body:page.body.replace(/<(nav|header|footer|aside)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ');
  const region=/<(?:article|main)\b[^>]*>([\s\S]*?)<\/(?:article|main)\s*>/i.exec(body)?.[1]||body;
  const text=/text\/plain/.test(page.contentType)?region.trim():plain(region);
  if(text.length<40)throw Error('页面没有足够正文，可能需要登录或 JavaScript，不能据此作答');
- return {title,url:page.url,text:text.slice(0,maxChars),truncated:text.length>maxChars};
+ return {title,url:page.url,text:text.slice(0,maxChars),truncated:text.length>maxChars,publishedAt:pageDate(page.body)};
 }

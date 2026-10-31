@@ -24,6 +24,7 @@ test('任务状态机拒绝非法跳转，并持久化计划、步骤和验证�
   await x.store.addStep(task.id, {title: '搜索', tool: 'plugin.qq-web.search', outcome: 'ok'});
   await x.store.addStep(task.id, {title: '读取', tool: 'plugin.qq-web.read', outcome: 'ok'});
   await x.store.transition(task.id, 'verifying');
+  await assert.rejects(x.store.transition(task.id, 'done', '未验证'), /完成条件尚未验证/);
   await x.store.verify(task.id, {ok: true, note: '两个来源一致'});
   await x.store.transition(task.id, 'done', '完成');
   await x.store.attachMemory(task.id, 'mem-1');
@@ -46,6 +47,16 @@ test('任务步骤和重试有明确上限，失败后只允许重新规划', as
   assert.equal(x.store.get(task.id).attempts, 1);
   await x.store.transition(task.id, 'planning', '重试');
   assert.equal(x.store.get(task.id).status, 'planning');
+});
+
+test('任务幂等键避免重复创建，并保存验证方式', async t => {
+  const x = await setup(t);
+  const a = await x.store.create({goal: '同一个操作', idempotencyKey: 'op-1', verificationMethod: 'tool', verificationSpec: {capability: 'qq.message.send', outcome: 'confirmed'}});
+  const b = await x.store.create({goal: '同一个操作重复', idempotencyKey: 'op-1'});
+  assert.equal(a.id, b.id);
+  assert.equal(x.store.tasks.length, 1);
+  assert.equal(a.verificationMethod, 'tool');
+  assert.equal(a.verificationSpec.outcome, 'confirmed');
 });
 
 test('任务列表区分活动/等待授权/失败，不把完成当成活动', async t => {

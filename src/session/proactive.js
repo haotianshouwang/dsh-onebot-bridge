@@ -88,7 +88,10 @@ export class ProactiveMessaging {
     if (reason === 'task' && cfg.proactiveAllowTask !== true) return false;
     if (reason === 'learning' && cfg.proactiveAllowLearning !== true) return false;
     if (!['task', 'learning', 'followup'].includes(reason)) return false;
-    this.state.pending.unshift({id: 'p-' + randomUUID().slice(0, 8), reason, title: String(title).slice(0, 180), summary: String(summary).slice(0, 500), at});
+    const cleanTitle = String(title).slice(0, 180), cleanSummary = String(summary).slice(0, 500);
+    const eventKey = createHash('sha256').update(reason + '\u001f' + cleanTitle + '\u001f' + cleanSummary).digest('hex');
+    if ((this.state.pending || []).some(row => row.eventKey === eventKey)) return false;
+    this.state.pending.unshift({id: 'p-' + randomUUID().slice(0, 8), reason, title: cleanTitle, summary: cleanSummary, eventKey, at});
     this.state.pending = this.state.pending.slice(0, 10);
     await this.persist();
     return true;
@@ -141,8 +144,8 @@ export class ProactiveMessaging {
         return {ok: false, skipped: 'empty'};
       }
       const hash = createHash('sha256').update(content).digest('hex');
-      if (hash === this.state.lastTextHash) {
-        this.record({at, outcome: 'skipped', reason: 'duplicate', chars: content.length});
+      if (hash === this.state.lastTextHash || (this.state.history || []).some(row => row.textHash === hash)) {
+        this.record({at, outcome: 'skipped', reason: 'duplicate', chars: content.length, textHash: hash});
         await this.persist();
         return {ok: false, skipped: 'duplicate'};
       }
@@ -156,7 +159,7 @@ export class ProactiveMessaging {
       this.state.lastOutcome = outcome;
       this.state.lastTextHash = hash;
       if (outcome === 'confirmed' || outcome === 'accepted') this.state.lastSentAt = at;
-      this.record({at, outcome, reason: event?.reason || 'inactive', chars: content.length, error: result?.error || ''});
+      this.record({at, outcome, reason: event?.reason || 'inactive', chars: content.length, error: result?.error || '', textHash: hash});
       await this.persist();
       this.log?.('info', '主动联系结果：' + outcome, {chars: content.length});
       return {ok: outcome === 'confirmed', outcome, accepted: outcome === 'accepted', chars: content.length, skipped: null};

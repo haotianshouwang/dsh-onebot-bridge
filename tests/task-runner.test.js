@@ -58,6 +58,18 @@ test('任务执行器没有工具结果时失败，重试上限后停在 failed'
   assert.equal(x.tasks.get(task.id).steps[0].status, 'failed');
 });
 
+test('超过任务时间预算后停止执行', async t => {
+  const x = await setup(t);
+  const task = await x.tasks.create({goal: '预算任务', plan: ['搜索'], budgetMs: 1000});
+  await x.tasks.transition(task.id, 'analyzing');
+  await x.tasks.transition(task.id, 'planning');
+  x.tick(2);
+  const result = await x.runner.tick();
+  assert.equal(result.status, 'failed');
+  assert.equal(x.tasks.get(task.id).status, 'failed');
+  assert.equal(x.calls.length, 0);
+});
+
 test('任务执行器重启后从持久化步骤继续', async t => {
   const x = await setup(t);
   const task = await x.tasks.create({goal: '跨重启任务', plan: ['第一步', '第二步']});
@@ -70,6 +82,38 @@ test('任务执行器重启后从持久化步骤继续', async t => {
   assert.equal(result.ok, true);
   assert.equal(reopened.get(task.id).steps.length, 2);
   assert.equal(reopened.get(task.id).status, 'verifying');
+});
+
+test('显式 steps 验证通过后才自动 done，并触发完成回调', async t => {
+  const x = await setup(t);
+  const seen = [];
+  x.runner.verifyTask = async ({task}) => ({ok: task.steps.every(step => step.status === 'done' && step.tool), note: '步骤工具齐全'});
+  x.runner.onDone = async task => seen.push(task.id);
+  const task = await x.tasks.create({goal: '自动验证', plan: ['搜索'], verificationMethod: 'steps'});
+  await x.tasks.transition(task.id, 'analyzing');
+  await x.tasks.transition(task.id, 'planning');
+  const result = await x.runner.tick();
+  assert.equal(result.status, 'done');
+  assert.equal(x.tasks.get(task.id).status, 'done');
+  assert.equal(x.tasks.get(task.id).verification.ok, true);
+  assert.deepEqual(seen, [task.id]);
+});
+
+test('manual 验证不会被自动 done，自动验证失败保持 verifying', async t => {
+  const x = await setup(t);
+  x.runner.verifyTask = async () => ({ok: false, note: '证据不足'});
+  const manual = await x.tasks.create({goal: '人工验证', plan: ['搜索'], verificationMethod: 'manual'});
+  await x.tasks.transition(manual.id, 'analyzing');
+  await x.tasks.transition(manual.id, 'planning');
+  await x.runner.tick();
+  assert.equal(x.tasks.get(manual.id).status, 'verifying');
+  const auto = await x.tasks.create({goal: '自动失败', plan: ['搜索'], verificationMethod: 'steps'});
+  await x.tasks.transition(auto.id, 'analyzing');
+  await x.tasks.transition(auto.id, 'planning');
+  const result = await x.runner.tick();
+  assert.equal(result.status, 'verifying');
+  assert.equal(x.tasks.get(auto.id).status, 'verifying');
+  assert.equal(x.tasks.get(auto.id).verification.ok, false);
 });
 
 test('任务执行器关闭时不做任何事', async t => {

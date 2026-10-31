@@ -277,8 +277,8 @@ export class NativeDSH {
     if(read?.ok!==true||!read.text)continue;
     const url=read.url||row.url;
     if(sources.some(item=>item.url===url))continue;
-    sources.push({url,title:row.title||read.title||'',text:String(read.text).slice(0,4000)});
-    tools.push({capability:'plugin.qq-web.read',ok:true,outcome:read.outcome||null,summary:{textChars:String(read.text).length,url,title:row.title||read.title||''}});
+    sources.push({url,title:row.title||read.title||'',text:String(read.text).slice(0,4000),publishedAt:Number(read.publishedAt)||0});
+    tools.push({capability:'plugin.qq-web.read',ok:true,outcome:read.outcome||null,summary:{textChars:String(read.text).length,url,title:row.title||read.title||'',publishedAt:Number(read.publishedAt)||0}});
    }
    return {ok:sources.length>=2,sources,tools,error:sources.length>=2?'':'公开来源不足两个'};
   }finally{

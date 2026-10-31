@@ -1,13 +1,38 @@
 // 有限任务执行器：只推进已经持久化、明确进入 planning/executing 的任务。
 // 每个 tick 只执行一步；模型会话由宿主注入，工具白名单由宿主决定。没有执行结果就不写成功。
 export class TaskRunner {
-  constructor({tasks, enabled, executeStep, now = Date.now, log} = {}) {
+  constructor({tasks, enabled, executeStep, verifyTask, onDone, now = Date.now, log} = {}) {
     this.tasks = tasks;
     this.enabled = enabled || (() => false);
     this.executeStep = executeStep;
+    this.verifyTask = verifyTask;
+    this.onDone = onDone;
     this.now = now;
     this.log = log;
     this.running = false;
+  }
+
+  async finish(task) {
+    await this.tasks.transition(task.id, 'verifying', 'all planned steps recorded');
+    if (task.verificationMethod === 'manual' || typeof this.verifyTask !== 'function') {
+      return {ok: true, taskId: task.id, status: 'verifying'};
+    }
+    let verdict;
+    try {
+      verdict = await this.verifyTask({task: this.tasks.get(task.id)});
+    } catch (error) {
+      verdict = {ok: false, note: String(error?.message || error).slice(0, 200)};
+    }
+    const ok = verdict?.ok === true;
+    await this.tasks.verify(task.id, {ok, note: String(verdict?.note || (ok ? '自动验证通过' : '自动验证未通过')).slice(0, 300)});
+    if (!ok) {
+      return {ok: false, taskId: task.id, status: 'verifying', verification: false, error: String(verdict?.note || '自动验证未通过').slice(0, 200)};
+    }
+    const done = await this.tasks.transition(task.id, 'done', 'auto verification: ' + String(verdict?.note || '').slice(0, 100));
+    if (typeof this.onDone === 'function') {
+      try { await this.onDone(done); } catch (error) { this.log?.('warn', '任务完成通知失败：' + String(error?.message || error).slice(0, 120)); }
+    }
+    return {ok: true, taskId: task.id, status: 'done', verification: true};
   }
 
   async tick() {
@@ -19,6 +44,10 @@ export class TaskRunner {
     ];
     const task = candidates.sort((a, b) => a.updatedAt - b.updatedAt)[0];
     if (!task) return {ok: false, skipped: 'no-task'};
+    if (task.budgetMs > 0 && this.now() - task.createdAt > task.budgetMs) {
+      await this.tasks.transition(task.id, 'failed', 'task budget exceeded');
+      return {ok: false, taskId: task.id, status: 'failed', error: 'task budget exceeded'};
+    }
     this.running = true;
     try {
       if (task.status === 'planning') await this.tasks.transition(task.id, 'executing', 'runner started');
@@ -26,8 +55,7 @@ export class TaskRunner {
       const index = task.steps.filter(step => step.status === 'done').length;
       const plan = task.plan || [];
       if (index >= Math.max(1, plan.length)) {
-        await this.tasks.transition(task.id, 'verifying', 'all planned steps recorded');
-        return {ok: true, taskId: task.id, status: 'verifying'};
+        return await this.finish(task);
       }
       const title = plan[index] || ('步骤 ' + (index + 1));
       let result;
@@ -54,8 +82,9 @@ export class TaskRunner {
         return {ok: false, taskId: task.id, status: 'failed', error: String(result?.error || 'step failed').slice(0, 200)};
       }
       const updated = this.tasks.get(task.id);
-      if (updated && updated.steps.length >= Math.max(1, updated.plan.length)) {
-        await this.tasks.transition(task.id, 'verifying', 'planned steps complete');
+      if (updated && updated.steps.filter(step => step.status === 'done').length >= Math.max(1, updated.plan.length)) {
+        const finished = await this.finish(updated);
+        return {...finished, step: title};
       }
       return {ok: true, taskId: task.id, status: this.tasks.get(task.id)?.status, step: title};
     } finally {

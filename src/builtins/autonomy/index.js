@@ -561,6 +561,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
       const sources = [...new Set(reads.map(row => row.summary?.url).filter(Boolean))];
       if (!search || !(search.summary?.resultCount > 0)) return {ok: false, error: '没有成功搜索结果'};
       if (sources.length < 2) return {ok: false, error: '自主学习至少需要读取两个独立来源'};
+      if (new Set(sources.map(url => new URL(url).hostname)).size < 2) return {ok: false, error: '自主学习需要两个不同站点的来源'};
       if (!remember || !remember.summary?.id) return {ok: false, error: '学习结果没有成功写入长期记忆'};
       if (!remember.summary?.sourceUrl) return {ok: false, error: '学习结果没有记录来源网址'};
       if (!sources.includes(remember.summary.sourceUrl)) return {ok: false, error: '学习记忆的来源不是本次实际读取的页面'};
@@ -639,7 +640,12 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
           if (fallback?.sources?.length) first.text = [first.text, ...fallback.sources.map(source => `${source.title || source.url}\n${source.text}`)].filter(Boolean).join('\n').slice(0, 8000);
         }
         if (sources.length < 2) throw new Error('自主学习至少需要读取两个独立来源');
-        const sourceText = sources.map((url, index) => `${index + 1}. ${url}`).join('\n');
+        if (new Set(sources.map(url => new URL(url).hostname)).size < 2) throw new Error('自主学习需要两个不同站点的来源');
+        const sourceText = sources.map((url, index) => {
+          const tool = (first.tools || []).find(row => row.capability === 'plugin.qq-web.read' && row.summary?.url === url);
+          const date = Number(tool?.summary?.publishedAt || 0);
+          return `${index + 1}. ${url}${date ? '（页面日期 ' + new Date(date).toISOString().slice(0, 10) + '）' : ''}`;
+        }).join('\n');
         const second = await native.autonomy({
           title: 'QQ 把学习结果写入记忆',
           allow: ['plugin.qq-memory.remember'],

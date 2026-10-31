@@ -112,8 +112,16 @@ export class Actions {
   this.add('qq.task.create','创建一条持久化任务，记录目标、完成条件和计划。仅主人可用；创建不等于执行。',object({
    goal:str('任务目标',500),reason:str('创建原因',300),completion:str('完成条件',300),
    plan:{type:'array',maxItems:20,items:{type:'string',maxLength:300}},
-   maxSteps:{type:'integer',minimum:1,maximum:50}
-  },['goal']),async a=>tasks.create(a),{ownerOnly:true,mutating:true});
+   maxSteps:{type:'integer',minimum:1,maximum:50},
+   budgetMs:{type:'integer',minimum:0,maximum:86400000},
+   verificationMethod:{type:'string',enum:['manual','steps','tool','readback']},
+   verificationCapability:str('验证动作能力',100),
+   verificationOutcome:str('期望工具结果',100),
+   verificationPath:str('回读字段路径',100),
+   verificationEquals:str('回读期望值',300),
+   verificationArgs:str('回读参数 JSON',500),
+   idempotencyKey:str('幂等键',200)
+  },['goal']),async a=>tasks.create({...a,verificationSpec:{capability:a.verificationCapability,outcome:a.verificationOutcome,path:a.verificationPath,equals:a.verificationEquals,args:a.verificationArgs}}),{ownerOnly:true,mutating:true});
   this.add('qq.task.list','列出持久化任务及真实状态；不会把计划当成已完成。',object({
    status:{type:'string',enum:['','pending','analyzing','planning','waiting_approval','executing','verifying','done','failed','cancelled']},
    limit:{type:'integer',minimum:1,maximum:100}
