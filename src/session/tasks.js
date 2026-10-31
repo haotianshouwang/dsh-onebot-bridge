@@ -41,6 +41,7 @@ export class TaskStore {
         if (!VERIFICATION_METHODS.includes(task.verificationMethod)) task.verificationMethod = 'manual';
         if (!task.verificationSpec || typeof task.verificationSpec !== 'object' || Array.isArray(task.verificationSpec)) task.verificationSpec = {};
         if (typeof task.idempotencyKey !== 'string') task.idempotencyKey = '';
+        if (!Number.isFinite(Number(task.verificationAttempts))) task.verificationAttempts = 0;
       }
     } catch (error) {
       if (error.code !== 'ENOENT') this.corrupt = true;
@@ -94,6 +95,7 @@ export class TaskStore {
       verificationMethod: method,
       verificationSpec: verificationSpec && typeof verificationSpec === 'object' ? structuredClone(verificationSpec) : {},
       idempotencyKey: key,
+      verificationAttempts: 0,
       verification: null,
       memoryIds: [],
       history: [{at, from: '', to: 'pending', note: 'created'}]
@@ -155,7 +157,8 @@ export class TaskStore {
     if (!task) throw new Error('任务不存在');
     if (task.status !== 'verifying') throw new Error('只有验证中的任务可以写入验证结果');
     const at = this.now();
-    task.verification = {ok: ok === true, note: clean(note, 300), at};
+    task.verificationAttempts = Number(task.verificationAttempts || 0) + 1;
+    task.verification = {ok: ok === true, note: clean(note, 300), at, attempts: task.verificationAttempts};
     task.updatedAt = at;
     await this.persist();
     return task;

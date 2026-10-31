@@ -99,6 +99,23 @@ test('显式 steps 验证通过后才自动 done，并触发完成回调', async
   assert.deepEqual(seen, [task.id]);
 });
 
+test('自动验证失败后只重试验证，不重复执行步骤', async t => {
+  const x = await setup(t);
+  let verifyCalls = 0;
+  x.runner.verifyTask = async () => ({ok: verifyCalls++ > 0, note: verifyCalls > 1 ? '第二次通过' : '暂时没证据'});
+  const task = await x.tasks.create({goal: '验证重试', plan: ['搜索'], verificationMethod: 'steps'});
+  await x.tasks.transition(task.id, 'analyzing');
+  await x.tasks.transition(task.id, 'planning');
+  const first = await x.runner.tick();
+  assert.equal(first.status, 'verifying');
+  assert.equal(x.tasks.get(task.id).verification.ok, false);
+  const steps = x.tasks.get(task.id).steps.length;
+  const second = await x.runner.tick();
+  assert.equal(second.status, 'done');
+  assert.equal(x.tasks.get(task.id).steps.length, steps);
+  assert.equal(x.tasks.get(task.id).verification.attempts, 2);
+});
+
 test('manual 验证不会被自动 done，自动验证失败保持 verifying', async t => {
   const x = await setup(t);
   x.runner.verifyTask = async () => ({ok: false, note: '证据不足'});

@@ -12,6 +12,23 @@ export class TaskRunner {
     this.running = false;
   }
 
+  async recheck(task) {
+    let verdict;
+    try {
+      verdict = await this.verifyTask({task});
+    } catch (error) {
+      verdict = {ok: false, note: String(error?.message || error).slice(0, 200)};
+    }
+    const ok = verdict?.ok === true;
+    await this.tasks.verify(task.id, {ok, note: String(verdict?.note || (ok ? '自动验证通过' : '自动验证未通过')).slice(0, 300)});
+    if (!ok) return {ok: false, taskId: task.id, status: 'verifying', verification: false, error: String(verdict?.note || '自动验证未通过').slice(0, 200)};
+    const done = await this.tasks.transition(task.id, 'done', 'auto verification retry: ' + String(verdict?.note || '').slice(0, 100));
+    if (typeof this.onDone === 'function') {
+      try { await this.onDone(done); } catch (error) { this.log?.('warn', '任务完成通知失败：' + String(error?.message || error).slice(0, 120)); }
+    }
+    return {ok: true, taskId: task.id, status: 'done', verification: true, retry: true};
+  }
+
   async finish(task) {
     await this.tasks.transition(task.id, 'verifying', 'all planned steps recorded');
     if (task.verificationMethod === 'manual' || typeof this.verifyTask !== 'function') {
@@ -40,10 +57,12 @@ export class TaskRunner {
     if (!this.enabled()) return {ok: false, skipped: 'disabled'};
     const candidates = [
       ...this.tasks.list({status: 'executing', limit: 10}),
-      ...this.tasks.list({status: 'planning', limit: 10})
+      ...this.tasks.list({status: 'planning', limit: 10}),
+      ...this.tasks.list({status: 'verifying', limit: 10}).filter(task => task.verificationMethod !== 'manual' && task.verification?.ok === false && Number(task.verificationAttempts || 0) < 2)
     ];
     const task = candidates.sort((a, b) => a.updatedAt - b.updatedAt)[0];
     if (!task) return {ok: false, skipped: 'no-task'};
+    if (task.status === 'verifying' && task.verificationMethod !== 'manual' && task.verification?.ok === false) return await this.recheck(task);
     if (task.budgetMs > 0 && this.now() - task.createdAt > task.budgetMs) {
       await this.tasks.transition(task.id, 'failed', 'task budget exceeded');
       return {ok: false, taskId: task.id, status: 'failed', error: 'task budget exceeded'};
