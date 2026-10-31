@@ -42,13 +42,18 @@ test('任务执行器每次只推进一步，所有计划步骤完成后进入�
   assert.equal(x.calls.length, 2);
 });
 
-test('任务执行器没有工具结果时失败，而不是把模型文字当完成', async t => {
+test('任务执行器没有工具结果时失败，重试上限后停在 failed', async t => {
   const x = await setup(t, {ok: false});
   const task = await x.tasks.create({goal: '核实一个事实', plan: ['搜索']});
   await x.tasks.transition(task.id, 'analyzing');
   await x.tasks.transition(task.id, 'planning');
-  const result = await x.runner.tick();
-  assert.equal(result.ok, false);
+  const first = await x.runner.tick();
+  assert.equal(first.ok, false);
+  assert.equal(first.retry, true);
+  assert.equal(x.tasks.get(task.id).status, 'planning');
+  await x.runner.tick();
+  const third = await x.runner.tick();
+  assert.equal(third.ok, false);
   assert.equal(x.tasks.get(task.id).status, 'failed');
   assert.equal(x.tasks.get(task.id).steps[0].status, 'failed');
 });

@@ -22,7 +22,8 @@ export class TaskRunner {
     this.running = true;
     try {
       if (task.status === 'planning') await this.tasks.transition(task.id, 'executing', 'runner started');
-      const index = task.steps.length;
+      // 失败步骤不能算作计划完成；重试时仍从同一步继续。
+      const index = task.steps.filter(step => step.status === 'done').length;
       const plan = task.plan || [];
       if (index >= Math.max(1, plan.length)) {
         await this.tasks.transition(task.id, 'verifying', 'all planned steps recorded');
@@ -45,6 +46,11 @@ export class TaskRunner {
       });
       if (!ok) {
         await this.tasks.transition(task.id, 'failed', String(result?.error || 'step failed').slice(0, 160));
+        const failed = this.tasks.get(task.id);
+        if (failed && failed.attempts <= failed.maxRetries) {
+          await this.tasks.transition(task.id, 'planning', 'retry ' + failed.attempts + '/' + failed.maxRetries);
+          return {ok: false, taskId: task.id, status: 'planning', retry: true, error: String(result?.error || 'step failed').slice(0, 200)};
+        }
         return {ok: false, taskId: task.id, status: 'failed', error: String(result?.error || 'step failed').slice(0, 200)};
       }
       const updated = this.tasks.get(task.id);
