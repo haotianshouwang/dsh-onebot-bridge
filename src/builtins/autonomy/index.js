@@ -644,14 +644,15 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
         const sourceText = sources.map((url, index) => {
           const tool = (first.tools || []).find(row => row.capability === 'plugin.qq-web.read' && row.summary?.url === url);
           const date = Number(tool?.summary?.publishedAt || 0);
-          return `${index + 1}. ${url}${date ? '（页面日期 ' + new Date(date).toISOString().slice(0, 10) + '）' : ''}`;
+          const title = String(tool?.summary?.title || '').slice(0, 120);
+          return `${index + 1}. ${url}${title ? '（' + title + '）' : ''}${date ? '（页面日期 ' + new Date(date).toISOString().slice(0, 10) + '）' : ''}`;
         }).join('\n');
         const second = await native.autonomy({
           title: 'QQ 把学习结果写入记忆',
           allow: ['plugin.qq-memory.remember'],
           audit: true,
           timeoutMs: 90000,
-          system: `[任务]\n只根据下面这次实际读取过的来源写 2–3 句理解，并调用 remember 存成通用记忆（tags 带“学习”）。sourceUrl 必须使用来源列表里的 URL；sourceTitle 可省略；有页面日期时填 publishedAt；confidence 按证据强弱填 0–1。不要补写未读到的内容。\n\n[本次真实来源]\n${sourceText}\n\n[阅读笔记]\n${String(first.text || '').slice(0, 3000)}`,
+          system: `[任务]\n只根据下面这次实际读取过的来源写 2–3 句理解，并调用 remember 存成通用记忆（tags 带“学习”）。sourceUrl 必须使用来源列表里的 URL；sourceTitle 尽量填来源标题；有页面日期时填 publishedAt；confidence 按证据强弱填 0–1。不要补写未读到的内容。\n\n[本次真实来源]\n${sourceText}\n\n[阅读笔记]\n${String(first.text || '').slice(0, 3000)}`,
           user: '把这次阅读结果写入长期记忆。'
         });
         raw = {text: second.text, tools: [...(first.tools || []), ...(second.tools || [])]};
