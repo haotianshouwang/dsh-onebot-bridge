@@ -245,6 +245,12 @@
       "min": 40,
       "max": 500,
       "integer": true
+    },
+    "taskRunnerEnabled": {
+      "type": "boolean",
+      "title": "允许自动推进持久化任务",
+      "default": false,
+      "description": "默认关闭。开启后只推进已明确进入 planning/executing 的任务，每步必须有工具结果；只允许安全的查询/记忆工具，不发 QQ 消息。"
     }
   },
   "settings": {
@@ -310,6 +316,12 @@
           "proactiveQuietHours",
           "proactiveAllowCasual",
           "proactiveMaxChars"
+        ]
+      },
+      {
+        "title": "任务执行",
+        "fields": [
+          "taskRunnerEnabled"
         ]
       }
     ]

@@ -1226,7 +1226,8 @@ function autonomyDraft(overview) {
       proactiveMinIntervalMinutes: config.proactiveMinIntervalMinutes ?? 180,
       proactiveQuietHours: config.proactiveQuietHours || '23:00-08:00',
       proactiveAllowCasual: config.proactiveAllowCasual === true,
-      proactiveMaxChars: config.proactiveMaxChars ?? 240
+      proactiveMaxChars: config.proactiveMaxChars ?? 240,
+      taskRunnerEnabled: config.taskRunnerEnabled === true
     };
   }
   return ui.draft;
@@ -1523,7 +1524,8 @@ function autonomySettingsView(overview, draft) {
       proactiveMinIntervalMinutes: Number(draft.proactiveMinIntervalMinutes),
       proactiveQuietHours: draft.proactiveQuietHours,
       proactiveAllowCasual: draft.proactiveAllowCasual,
-      proactiveMaxChars: Number(draft.proactiveMaxChars)
+      proactiveMaxChars: Number(draft.proactiveMaxChars),
+      taskRunnerEnabled: draft.taskRunnerEnabled
     }
   }, '自主时间设置已保存');
   const settingsBar = savebar('保存后调度器会读取新配置；修改不会伪造活动记录', save);
@@ -1568,7 +1570,8 @@ function autonomySettingsView(overview, draft) {
       field('最短间隔（分钟）', numberInput(draft.proactiveMinIntervalMinutes, value => { draft.proactiveMinIntervalMinutes = value; }, {min: 30, max: 1440})),
       field('安静时段', textInput(draft.proactiveQuietHours, value => { draft.proactiveQuietHours = value; }, {placeholder: '23:00-08:00'})),
       field('主动消息最多字数', numberInput(draft.proactiveMaxChars, value => { draft.proactiveMaxChars = value; }, {min: 40, max: 500})),
-      el('div', {class: 'span-2'}, toggle('允许普通闲聊式主动联系', draft.proactiveAllowCasual, value => { draft.proactiveAllowCasual = value; }, '关闭时只跟进最近对话里真实存在的未完成事项'))),
+      el('div', {class: 'span-2'}, toggle('允许普通闲聊式主动联系', draft.proactiveAllowCasual, value => { draft.proactiveAllowCasual = value; }, '关闭时只跟进最近对话里真实存在的未完成事项')),
+      el('div', {class: 'span-2'}, toggle('允许自动推进持久化任务', draft.taskRunnerEnabled, value => { draft.taskRunnerEnabled = value; }, '默认关闭；只推进已明确进入 planning/executing 的任务，每步必须有工具结果；不发 QQ 消息'))),
     el('div', {class: 'card'}, el('header', {}, el('h2', {}, '历史保留与分页'), el('p', {class: 'desc'}, '“不主动删除”不代表无限加载；列表仍分页读取。')),
       el('div', {class: 'form-grid'},
         field('日记保留策略', select(draft.diaryRetentionMode, value => { draft.diaryRetentionMode = value; render(); }, [['none', '不主动按数量删除'], ['count', '按篇数'], ['days', '按天数']])),

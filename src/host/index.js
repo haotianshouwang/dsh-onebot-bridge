@@ -35,6 +35,7 @@ import {Uninstaller} from '../core/uninstall.js';
 import { Router } from '../session/router.js';
 import {ProactiveMessaging} from '../session/proactive.js';
 import {TaskStore} from '../session/tasks.js';
+import {TaskRunner} from '../session/task-runner.js';
 import { Extensions,validateConfig } from '../extensions/index.js';
 import { Market } from '../market/index.js';
 import { validatePersona,resolvePersona,renderPersona,assertCanDelete,importPersona } from '../personas/index.js';
@@ -187,6 +188,30 @@ export async function apply(ctx,config) {
     proactiveTimer=setInterval(()=>{void proactive.tick().catch(error=>log('warn','主动联系调度失败：'+String(error?.message||error).slice(0,160)));},60000);
     proactiveTimer.unref?.();
   }catch(error){log('error','主动联系不可用：'+error.message);proactive=null;}
+  // 有限任务执行器：只在主人开启 taskRunnerEnabled 后推进已存在的 planning/executing 任务。
+  let taskRunner=null,taskRunnerTimer=null;
+  const taskRunnerTools=['plugin.qq-web.search','plugin.qq-web.read','plugin.qq-web.image-search','plugin.qq-memory.recall','plugin.qq-memory.remember','qq.history.get','qq.group.info','qq.members.list','qq.message.get','core.status'];
+  if(taskStore&&typeof native.autonomy==='function')try{
+    taskRunner=new TaskRunner({
+      tasks:taskStore,
+      enabled:()=>store.data.framework.nativePackages['qq-autonomy']?.config?.taskRunnerEnabled===true,
+      now:()=>Date.now(),
+      log,
+      executeStep:async({task,index,title,completion})=>{
+        const persona=renderPersona(resolvePersona(store.data,'',bot?.status?.bot||''),{kind:'private'}).slice(0,4000);
+        const raw=await native.autonomy({
+          title:'QQ 任务步骤',allow:taskRunnerTools,audit:true,timeoutMs:120000,
+          system:`[任务]\n目标：${task.goal}\n完成条件：${completion||'按任务记录判断'}\n第 ${index+1} 步：${title}\n\n只完成这一步，不要发 QQ 消息、不要@任何人、不要修改权限。使用允许的工具获取真实结果；没有工具结果就明确说做不了。最后用一两句话说明本步结果。\n[角色设定]\n${persona}`,
+          user:`执行任务步骤：${title}`
+        });
+        const tools=(raw?.tools||[]).filter(row=>row.ok===true&&!['failed','denied','unknown'].includes(row.outcome));
+        if(!tools.length)return {ok:false,error:'本步没有成功的工具结果'};
+        return {ok:true,tool:tools.map(row=>row.capability).join(','),outcome:tools.map(row=>row.outcome||'ok').join(','),text:raw.text};
+      }
+    });
+    taskRunnerTimer=setInterval(()=>{void taskRunner.tick().catch(error=>log('warn','任务执行失败：'+String(error?.message||error).slice(0,160)));},60000);
+    taskRunnerTimer.unref?.();
+  }catch(error){log('error','任务执行器不可用：'+error.message);taskRunner=null;}
   // 独立管理站点：只监听本机，自带密码登录；启动失败只记日志，不影响 QQ 桥接。
   let admin=null;
   try{admin=await startAdminServer({
@@ -512,6 +537,6 @@ export async function apply(ctx,config) {
       return Response.json({ok:true,value:await task});
     }catch(error){await store.persist().catch(()=>{});return Response.json({ok:false,error:String(error.message||error).replaceAll(token||'\0','[已隐藏]')},{status:400});}
   }});
-  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
+  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearInterval(taskRunnerTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
   await sdk.pruneStorage();await market.start();await media.start();await extensions.start();await native.start();await connect();qzoneAdmin.startScheduler();log('info','QQ 桥接插件已就绪，数据目录：'+store.dir);
 }

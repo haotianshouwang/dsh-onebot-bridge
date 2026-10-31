@@ -45,7 +45,8 @@ export const manifest = {
     proactiveMinIntervalMinutes: { type: 'number', title: '两次主动消息最短间隔（分钟）', default: 180, min: 30, max: 1440, integer: true },
     proactiveQuietHours: { type: 'string', title: '主动联系安静时段', default: '23:00-08:00', maxLength: 20, description: '格式 HH:MM-HH:MM，可跨午夜。' },
     proactiveAllowCasual: { type: 'boolean', title: '允许普通闲聊式主动联系', default: false, description: '关闭时只允许跟进最近对话中真实存在的未完成事项。' },
-    proactiveMaxChars: { type: 'number', title: '主动消息最多字数', default: 240, min: 40, max: 500, integer: true }
+    proactiveMaxChars: { type: 'number', title: '主动消息最多字数', default: 240, min: 40, max: 500, integer: true },
+    taskRunnerEnabled: { type: 'boolean', title: '允许自动推进持久化任务', default: false, description: '默认关闭。开启后只推进已明确进入 planning/executing 的任务，每步必须有工具结果；只允许安全的查询/记忆工具，不发 QQ 消息。' }
   },
   settings: {
     title: '自主时间',
@@ -56,7 +57,8 @@ export const manifest = {
       { title: '保留与分页', fields: ['diaryRetentionMode', 'diaryRetentionCount', 'diaryRetentionDays', 'activityRetentionMode', 'activityRetentionCount', 'activityRetentionDays', 'timelinePageSize'] },
       { title: '空间', fields: ['qzonePostEnabled', 'browseEnabled', 'browseTargets', 'browseEveryHours', 'commentEnabled'] },
       { title: '秘密空间', fields: ['secretAutoDecide'] },
-      { title: '主动联系', fields: ['proactiveEnabled', 'proactiveInactiveMinutes', 'proactiveDailyLimit', 'proactiveMinIntervalMinutes', 'proactiveQuietHours', 'proactiveAllowCasual', 'proactiveMaxChars'] }
+      { title: '主动联系', fields: ['proactiveEnabled', 'proactiveInactiveMinutes', 'proactiveDailyLimit', 'proactiveMinIntervalMinutes', 'proactiveQuietHours', 'proactiveAllowCasual', 'proactiveMaxChars'] },
+      { title: '任务执行', fields: ['taskRunnerEnabled'] }
     ]
   }
 };
