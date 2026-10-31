@@ -78,7 +78,7 @@ export class Permissions {
   }
   assert(cap,c,consume=false){
     const reason=this.decision(cap,c);
-    if(reason){this.audit('denied',cap?.id||'unknown',c,reason);throw new Error(reason);}
+    if(reason){this.audit('denied',cap?.id||'unknown',c,reason,cap?.riskLevel||'');throw new Error(reason);}
     if(consume){
       this.#used.get(c)?.add(cap);
       const grants=this.store.data.framework.grants.filter(g=>!g.deny&&g.capability===cap.id&&(g.users.includes(c.actor)||g.allUsers===true&&cap.publicSafe)&&
@@ -90,9 +90,9 @@ export class Permissions {
       if(this.usage.size>2000)this.usage.delete(this.usage.keys().next().value);
     }
   }
-  audit(outcome,cap,c,reason=''){
+  audit(outcome,cap,c,reason='',riskLevel=''){
     const rows=this.store.data.framework.audit;
-    rows.push({time:new Date().toISOString(),outcome,capability:cap,actor:c?.actor||'',kind:c?.kind||'',peer:c?.peer||'',reason:String(reason).slice(0,250)});
+    rows.push({time:new Date().toISOString(),outcome,capability:cap,riskLevel:String(riskLevel||''),actor:c?.actor||'',kind:c?.kind||'',peer:c?.peer||'',reason:String(reason).slice(0,250)});
     if(rows.length>300)rows.splice(0,rows.length-300);
   }
 }

@@ -35,6 +35,7 @@ test('任务动作通过权限检查后可创建、推进、验证和查询', as
   actions.onTaskEvent = async event => taskEvents.push(event);
   const created = await actions.invoke('qq.task.create', {goal: '阅读并验证一篇文章', completion: '两个独立来源一致', plan: ['搜索', '读取', '验证']}, context);
   assert.equal(created.status, 'pending');
+  assert.equal(store.data.framework.audit.at(-1).riskLevel, 'C');
   await actions.invoke('qq.task.transition', {id: created.id, status: 'analyzing', note: '开始'}, context);
   await actions.invoke('qq.task.transition', {id: created.id, status: 'planning'}, context);
   await actions.invoke('qq.task.transition', {id: created.id, status: 'executing'}, context);

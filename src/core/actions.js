@@ -163,14 +163,14 @@ export class Actions {
  async invoke(id,args,c,signal){
   const cap=this.definitions.get(id);this.permissions.assert(cap,c,true);
   const parsed=parse(args,cap.parameters);this.checkBot(c);if(signal?.aborted)throw new Error('操作已取消');
-  this.permissions.audit('started',id,c);
+  this.permissions.audit('started',id,c,'',cap.riskLevel);
   if(this.executions.has(c))throw new Error('同一执行上下文不能并发调用动作');
   this.executions.set(c,{cap,signal});
   try{
    const result=await cap.run(parsed,c,signal);
    this.permissions.assert(cap,c);this.checkBot(c);if(signal?.aborted)throw new Error('操作已取消');
-   this.permissions.audit('completed',id,c);return result??null;
-  }catch(e){this.permissions.audit(e.code==='UNKNOWN_OUTCOME'?'unknown':'failed',id,c,e.message);throw e;}
+   this.permissions.audit('completed',id,c,'',cap.riskLevel);return result??null;
+  }catch(e){this.permissions.audit(e.code==='UNKNOWN_OUTCOME'?'unknown':'failed',id,c,e.message,cap.riskLevel);throw e;}
   finally{this.executions.delete(c);await this.store.persist();}
  }
  outputKey(c){return [c.boot,c.generation,c.key,c.actor,c.messageId].join('|');}
