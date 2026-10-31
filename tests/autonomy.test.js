@@ -123,6 +123,21 @@ test('自主学习必须有搜索、正文、来源和记忆写入',async t=>{
  assert.match(weak.error,/两个独立来源/);
 });
 
+test('模型只读一个来源时用确定的公开双来源补读',async t=>{
+ const at=new Date(2026,9,31,22,30).getTime();
+ const x=await setup(t,{at});
+ x.item.config.diaryEnabled=false;x.item.config.slangEnabled=false;x.item.config.learnEnabled=true;
+ x.native.autonomy=async plan=>plan.allow.includes('plugin.qq-memory.remember')
+  ? {text:'两个来源一致。',tools:[{capability:'plugin.qq-memory.remember',ok:true,summary:{id:'mem-1',sourceUrl:'https://example.com/a'}}]}
+  : {text:'只读了一个。',tools:[{capability:'plugin.qq-web.search',ok:true,summary:{resultCount:2}},{capability:'plugin.qq-web.read',ok:true,summary:{textChars:30,url:'https://example.com/a'}}]};
+ x.native.learnSources=async()=>({ok:true,tools:[
+  {capability:'plugin.qq-web.search',ok:true,summary:{resultCount:2}},
+  {capability:'plugin.qq-web.read',ok:true,summary:{textChars:40,url:'https://example.org/b'}}
+ ],sources:[{url:'https://example.org/b',title:'B',text:'补读正文'}]});
+ const result=await x.auto.tick(at,{force:'learn'});
+ assert.equal(result.ok,true);
+});
+
 test('真实学习完成后才触发学习通知回调',async t=>{
  const at=new Date(2026,9,31,22,30).getTime();
  let learned=null;

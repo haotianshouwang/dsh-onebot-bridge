@@ -253,6 +253,38 @@ export class NativeDSH {
   }
   return output;
  }
+ async learnSources(query='今天值得了解的科学知识'){
+  if(this.stopped)throw new Error('框架正在停止');
+  const bot=this.incoming?.bot?.status?.bot;if(!bot)throw new Error('QQ 未连接');
+  const owner=this.store.data.framework.ownerQQ;if(!owner)throw new Error('未配置主人 QQ');
+  const key=bot+':private:'+owner;
+  const msg={type:'message',bot,kind:'private',peer:owner,key,user:owner,id:'learn-'+randomUUID(),time:Date.now()/1000,text:String(query),mentions:[],sender:'自己',parts:[]};
+  const context=this.permissions.issue(msg,'autonomy');
+  const tools=[];
+  const sources=[];
+  try{
+   const searchCap=this.actions.definitions.get('plugin.qq-web.search');
+   if(!searchCap||this.permissions.decision(searchCap,context))return {ok:false,error:'联网搜索不可用',tools};
+   const search=await this.actions.invoke('plugin.qq-web.search',{query:String(query).slice(0,200)},context);
+   tools.push({capability:'plugin.qq-web.search',ok:search?.ok===true,outcome:search?.outcome||null,summary:{resultCount:Array.isArray(search?.results)?search.results.length:0}});
+   if(search?.ok!==true)return {ok:false,error:search?.error||'搜索失败',tools};
+   for(const row of (search.results||[]).slice(0,6)){
+    if(sources.length>=2)break;
+    const readCap=this.actions.definitions.get('plugin.qq-web.read');
+    if(!readCap||this.permissions.decision(readCap,context))continue;
+    let read;
+    try{read=await this.actions.invoke('plugin.qq-web.read',{url:row.url},context);}catch{continue;}
+    if(read?.ok!==true||!read.text)continue;
+    const url=read.url||row.url;
+    if(sources.some(item=>item.url===url))continue;
+    sources.push({url,title:row.title||read.title||'',text:String(read.text).slice(0,4000)});
+    tools.push({capability:'plugin.qq-web.read',ok:true,outcome:read.outcome||null,summary:{textChars:String(read.text).length,url,title:row.title||read.title||''}});
+   }
+   return {ok:sources.length>=2,sources,tools,error:sources.length>=2?'':'公开来源不足两个'};
+  }finally{
+   this.permissions.close(context);
+  }
+ }
  async compose({system,user,timeoutMs=45000,title='QQ 主动联系'}={}){
   if(this.stopped)throw new Error('框架正在停止');
   const bot=this.incoming?.bot?.status?.bot;if(!bot)throw new Error('QQ 未连接');

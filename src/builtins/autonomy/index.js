@@ -618,6 +618,16 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
           sources = [...new Set([...sources, ...reads.map(row => row.summary.url)])];
           first = {text: [first.text, part.text].filter(Boolean).join('\n').slice(0, 6000), tools: [...(first.tools || []), ...(part.tools || [])]};
         }
+        if (sources.length < 2 && typeof native.learnSources === 'function') {
+          // 模型只读一个来源时，用现有 web 动作做一次确定的双来源补读；
+          // 这里仍然只读取公开页面，不伪造来源或正文。
+          const fallback = await native.learnSources('今天值得了解的科学知识');
+          for (const source of fallback?.sources || []) {
+            if (!sources.includes(source.url)) sources.push(source.url);
+          }
+          if (fallback?.tools?.length) first.tools = [...(first.tools || []), ...fallback.tools];
+          if (fallback?.sources?.length) first.text = [first.text, ...fallback.sources.map(source => `${source.title || source.url}\n${source.text}`)].filter(Boolean).join('\n').slice(0, 8000);
+        }
         if (sources.length < 2) throw new Error('自主学习至少需要读取两个独立来源');
         const sourceText = sources.map((url, index) => `${index + 1}. ${url}`).join('\n');
         const second = await native.autonomy({
