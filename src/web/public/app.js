@@ -2047,7 +2047,7 @@ async function renderStarPanel(node, panel) {
       el('p', {class: 'star-panel-text'}, memory.text),
       tagList(memory.tags),
       detail.related?.length ? el('div', {}, el('h4', {}, '关联（推断）'), el('div', {class: 'star-related'}, detail.related.map(row => button(row.label, () => state.starMap?.focus(row.id), {ghost: true, small: true})))) : null,
-      detail.conflicts?.length ? el('div', {}, el('h4', {}, '历史冲突（' + detail.conflicts.length + '）'), el('p', {class: 'faint'}, detail.conflicts[0].newText + ' ← ' + (detail.conflicts[0].oldSourceUrl || '无来源'))) : null,
+      detail.conflicts?.some(row => !row.resolvedAt) ? (() => { const conflict = detail.conflicts.find(row => !row.resolvedAt); return el('div', {}, el('h4', {}, '未处理冲突'), el('p', {class: 'faint'}, conflict.newText + ' ← ' + (conflict.oldSourceUrl || '无来源')), el('div', {class: 'row'}, button('标记已处理', () => pageAction('memory', 'memoryAdmin', {op: 'resolveConflict', conflictId: conflict.id}, '冲突已标记处理').then(() => openMemoryDetail(memory.id)), {ghost: true, small: true}))); })() : null,
       el('p', {class: 'faint'}, detail.historyAvailable ? '' : '未保存逐次编辑历史；冲突记录保留在 memory_conflicts。'),
       el('div', {class: 'row'},
         button('完整详情', () => openMemoryDetail(memory.id), {primary: true, small: true}),

@@ -127,6 +127,9 @@ test('联网学习记忆保留来源、发布时间、可信度和过期时间',
  const conflicts=x.memory.conflictsFor(saved.id);
  assert.equal(conflicts.length,1);
  assert.equal(conflicts[0].newSourceUrl,'https://example.org/other');
+ const resolved=x.memory.resolveConflict(conflicts[0].id);
+ assert.equal(resolved.ok,true);
+ assert.ok(x.memory.conflictsFor(saved.id)[0].resolvedAt);
 });
 
 test('recall 支持语义检索、记录使用次数并在没命中时明确为空',async t=>{

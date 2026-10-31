@@ -257,6 +257,15 @@ export function createMemoryAdmin({store, getItem, now = () => Date.now()}) {
     };
   }
 
+  function resolveConflict(body = {}) {
+    const memory = requireStore();
+    const id = String(body.conflictId || '');
+    if (!id) throw new Error('请选择冲突记录');
+    const result = memory.resolveConflict(id, now());
+    if (!result.ok) throw new Error('冲突记录不存在或已处理');
+    return {ok: true, id, resolvedAt: new Date(result.resolvedAt).toISOString()};
+  }
+
   function reviewComplete(body = {}) {
     const memory = requireStore();
     const id = String(body.id || '');
@@ -278,5 +287,5 @@ export function createMemoryAdmin({store, getItem, now = () => Date.now()}) {
     };
   }
 
-  return {overview, list, get, create, update, remove, graph, reviewOverview, reviewComplete};
+  return {overview, list, get, create, update, remove, graph, reviewOverview, reviewComplete, resolveConflict};
 }

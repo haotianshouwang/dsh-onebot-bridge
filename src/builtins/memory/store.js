@@ -329,6 +329,12 @@ export class MemoryStore {
     return {id, memoryId, oldText: String(oldText).slice(0, 2000), newText: String(newText).slice(0, 2000), createdAt: at};
   }
 
+  resolveConflict(id, at = Date.now()) {
+    this.assertOpen();
+    const result = this.db.prepare('UPDATE memory_conflicts SET resolved_at = ? WHERE id = ? AND resolved_at = 0').run(at, String(id));
+    return {ok: result.changes > 0, id: String(id), resolvedAt: result.changes > 0 ? at : 0};
+  }
+
   conflictsFor(memoryId) {
     this.assertOpen();
     return this.db.prepare('SELECT * FROM memory_conflicts WHERE memory_id = ? ORDER BY created_at DESC LIMIT 20').all(String(memoryId)).map(row => ({
