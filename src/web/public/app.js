@@ -1226,6 +1226,8 @@ function autonomyDraft(overview) {
       proactiveMinIntervalMinutes: config.proactiveMinIntervalMinutes ?? 180,
       proactiveQuietHours: config.proactiveQuietHours || '23:00-08:00',
       proactiveAllowCasual: config.proactiveAllowCasual === true,
+      proactiveAllowTask: config.proactiveAllowTask === true,
+      proactiveAllowLearning: config.proactiveAllowLearning === true,
       proactiveMaxChars: config.proactiveMaxChars ?? 240,
       taskRunnerEnabled: config.taskRunnerEnabled === true
     };
@@ -1524,6 +1526,8 @@ function autonomySettingsView(overview, draft) {
       proactiveMinIntervalMinutes: Number(draft.proactiveMinIntervalMinutes),
       proactiveQuietHours: draft.proactiveQuietHours,
       proactiveAllowCasual: draft.proactiveAllowCasual,
+      proactiveAllowTask: draft.proactiveAllowTask,
+      proactiveAllowLearning: draft.proactiveAllowLearning,
       proactiveMaxChars: Number(draft.proactiveMaxChars),
       taskRunnerEnabled: draft.taskRunnerEnabled
     }
@@ -1571,6 +1575,8 @@ function autonomySettingsView(overview, draft) {
       field('安静时段', textInput(draft.proactiveQuietHours, value => { draft.proactiveQuietHours = value; }, {placeholder: '23:00-08:00'})),
       field('主动消息最多字数', numberInput(draft.proactiveMaxChars, value => { draft.proactiveMaxChars = value; }, {min: 40, max: 500})),
       el('div', {class: 'span-2'}, toggle('允许普通闲聊式主动联系', draft.proactiveAllowCasual, value => { draft.proactiveAllowCasual = value; }, '关闭时只跟进最近对话里真实存在的未完成事项')),
+      el('div', {class: 'span-2'}, toggle('允许任务完成通知', draft.proactiveAllowTask, value => { draft.proactiveAllowTask = value; }, '仅任务进入 done 后，且仍受频率/安静时段限制')),
+      el('div', {class: 'span-2'}, toggle('允许学习进展通知', draft.proactiveAllowLearning, value => { draft.proactiveAllowLearning = value; }, '仅真实学习结果后，且仍受频率/安静时段限制')),
       el('div', {class: 'span-2'}, toggle('允许自动推进持久化任务', draft.taskRunnerEnabled, value => { draft.taskRunnerEnabled = value; }, '默认关闭；只推进已明确进入 planning/executing 的任务，每步必须有工具结果；不发 QQ 消息'))),
     el('div', {class: 'card'}, el('header', {}, el('h2', {}, '历史保留与分页'), el('p', {class: 'desc'}, '“不主动删除”不代表无限加载；列表仍分页读取。')),
       el('div', {class: 'form-grid'},

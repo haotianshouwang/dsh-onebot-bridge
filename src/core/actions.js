@@ -126,7 +126,11 @@ export class Actions {
   },['id','steps']),async a=>({task:await tasks.setPlan(a.id,a.steps)}),{ownerOnly:true,mutating:true});
   this.add('qq.task.transition','按状态机推进任务；非法跳转会被拒绝。',object({
    id:str('任务 ID',100),status:{type:'string',enum:['analyzing','planning','waiting_approval','executing','verifying','done','failed','cancelled']},note:str('状态说明',160)
-  },['id','status']),async a=>({task:await tasks.transition(a.id,a.status,a.note)}),{ownerOnly:true,mutating:true});
+  },['id','status']),async a=>{
+   const task=await tasks.transition(a.id,a.status,a.note);
+   if(a.status==='done'&&typeof this.onTaskEvent==='function')try{await this.onTaskEvent({reason:'task',title:task.goal,summary:task.verification?.note||task.completion||''});}catch{}
+   return {task};
+  },{ownerOnly:true,mutating:true});
   this.add('qq.task.step','给执行中的任务追加一个真实步骤结果。',object({
    id:str('任务 ID',100),title:str('步骤',200),tool:str('工具',100),status:{type:'string',enum:['pending','running','done','failed','skipped']},outcome:str('结果摘要',200),note:str('备注',200)
   },['id','title']),async a=>({step:await tasks.addStep(a.id,a)}),{ownerOnly:true,mutating:true});

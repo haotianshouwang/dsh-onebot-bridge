@@ -188,6 +188,7 @@ export async function apply(ctx,config) {
     proactiveTimer=setInterval(()=>{void proactive.tick().catch(error=>log('warn','主动联系调度失败：'+String(error?.message||error).slice(0,160)));},60000);
     proactiveTimer.unref?.();
   }catch(error){log('error','主动联系不可用：'+error.message);proactive=null;}
+  if(proactive)actions.onTaskEvent=event=>proactive.notify(event).catch(error=>log('warn','任务通知入队失败：'+String(error?.message||error).slice(0,160)));
   // 有限任务执行器：只在主人开启 taskRunnerEnabled 后推进已存在的 planning/executing 任务。
   let taskRunner=null,taskRunnerTimer=null;
   const taskRunnerTools=['plugin.qq-web.search','plugin.qq-web.read','plugin.qq-web.image-search','plugin.qq-memory.recall','plugin.qq-memory.remember','qq.history.get','qq.group.info','qq.members.list','qq.message.get','core.status'];

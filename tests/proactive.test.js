@@ -75,6 +75,19 @@ test('发送 unknown 不冒充成功，并保留真实状态', async t => {
   assert.ok(x.p.status().recent.some(row => row.outcome === 'unknown'));
 });
 
+test('任务完成事件在允许时优先触发；关闭时只拒绝入队', async t => {
+  const x = await setup(t, {proactiveAllowTask: true});
+  assert.equal(await x.p.notify({reason: 'task', title: '查资料', summary: '两个来源一致'}), true);
+  const result = await x.p.tick();
+  assert.equal(result.ok, true);
+  assert.equal(x.sent.length, 1);
+  assert.equal(x.p.status().pending, 0);
+  assert.equal(x.p.status().recent[0].reason, 'task');
+  const off = await setup(t, {proactiveAllowTask: false});
+  assert.equal(await off.p.notify({reason: 'task', title: 'x'}), false);
+  assert.equal(off.sent.length, 0);
+});
+
 test('安静时段、每日上限和关闭开关都不发送', async t => {
   const quiet = await setup(t, {proactiveQuietHours: '12:00-13:00'});
   assert.equal((await quiet.p.tick()).skipped, 'quiet');

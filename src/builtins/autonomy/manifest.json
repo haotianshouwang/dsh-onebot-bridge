@@ -246,6 +246,18 @@
       "max": 500,
       "integer": true
     },
+    "proactiveAllowTask": {
+      "type": "boolean",
+      "title": "允许任务完成通知",
+      "default": false,
+      "description": "任务进入 done 且主动联系开启时，允许生成一条受频率限制的通知。"
+    },
+    "proactiveAllowLearning": {
+      "type": "boolean",
+      "title": "允许学习进展通知",
+      "default": false,
+      "description": "学习活动产生真实结果后，允许生成一条受频率限制的通知。"
+    },
     "taskRunnerEnabled": {
       "type": "boolean",
       "title": "允许自动推进持久化任务",
@@ -315,6 +327,8 @@
           "proactiveMinIntervalMinutes",
           "proactiveQuietHours",
           "proactiveAllowCasual",
+          "proactiveAllowTask",
+          "proactiveAllowLearning",
           "proactiveMaxChars"
         ]
       },

@@ -27,6 +27,8 @@ test('任务动作通过权限检查后可创建、推进、验证和查询', as
   actions.installTaskActions(tasks);
   const msg = {bot, user: owner, kind: 'private', peer: owner, key: bot + ':private:' + owner, id: 'm1'};
   const context = permissions.issue(msg, 'chat');
+  const taskEvents = [];
+  actions.onTaskEvent = async event => taskEvents.push(event);
   const created = await actions.invoke('qq.task.create', {goal: '阅读并验证一篇文章', completion: '两个独立来源一致', plan: ['搜索', '读取', '验证']}, context);
   assert.equal(created.status, 'pending');
   await actions.invoke('qq.task.transition', {id: created.id, status: 'analyzing', note: '开始'}, context);
@@ -41,4 +43,6 @@ test('任务动作通过权限检查后可创建、推进、验证和查询', as
   assert.equal(list.items[0].status, 'done');
   assert.equal(list.items[0].steps.length, 1);
   assert.equal((await actions.invoke('qq.task.get', {id: created.id}, context)).task.verification.ok, true);
+  assert.equal(taskEvents.length, 1);
+  assert.equal(taskEvents[0].reason, 'task');
 });
