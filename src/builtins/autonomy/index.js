@@ -484,7 +484,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     }
     if (type === 'learn') {
       return {
-        title: 'QQ 自己上网学习', allow: ['plugin.qq-web.search', 'plugin.qq-web.read', 'plugin.qq-memory.remember'], audit: true,
+        title: 'QQ 自己上网学习', allow: ['plugin.qq-web.search', 'plugin.qq-web.read', 'plugin.qq-memory.remember'], audit: true, timeoutMs: 180000,
         system: common + '\n\n[任务] 挑一个你最近好奇的小知识，先 search 找资料，再用 read 至少打开两个独立来源并比较。然后用 2–3 句话写下自己的理解，调用 remember 存成通用记忆（tags 带“学习”，sourceUrl 填实际打开过的 read 返回 URL，sourceTitle 填标题；有页面日期时填 publishedAt，confidence 只按证据强弱填 0–1）。来源矛盾时写明不确定；不要照抄网页，不要写成长篇笔记，不要用搜索摘要冒充正文。',
         user: '去学点自己想学的东西。'
       };
