@@ -1,0 +1,133 @@
+{
+  "id": "qq-sticker",
+  "name": "表情包",
+  "version": "1.1.0",
+  "bundled": true,
+  "apiVersion": 2,
+  "type": "native-source",
+  "entry": "src/builtins/sticker/index.js",
+  "description": "收藏群里的表情包、按标签和情绪检索、发送，并在偷图后看图补名字、情绪和用途；只用公开搜索，不访问本机文件。",
+  "dependencies": {
+    "framework": ">=0.8.0"
+  },
+  "configVersion": 2,
+  "configMigrations": [
+    {
+      "to": 2,
+      "remove": [
+        "savePerDay"
+      ],
+      "defaults": {
+        "autoSaveSent": false,
+        "autoSaveIncoming": false
+      }
+    }
+  ],
+  "capabilities": [
+    "actions",
+    "resources"
+  ],
+  "configSchema": {
+    "listLimit": {
+      "type": "number",
+      "title": "检索返回数量",
+      "default": 8,
+      "min": 1,
+      "max": 20,
+      "integer": true
+    },
+    "autoSaveSent": {
+      "type": "boolean",
+      "title": "她发出去的图自动收进库",
+      "description": "联网搜到并发出的图片，发送成功后自动收藏。默认关闭。",
+      "default": false
+    },
+    "autoSaveIncoming": {
+      "type": "boolean",
+      "title": "群里收到的图自动收进库",
+      "description": "命中作用范围的聊天里，别人发的图片自动收藏（每个表情按内容去重）。默认关闭。",
+      "default": false
+    },
+    "collectProbability": {
+      "type": "number",
+      "title": "自动收藏概率（%）",
+      "description": "每条收到图片的消息 / 每次发出联网图片时只判定一次。100 表示都收，0 表示关闭自动收藏。",
+      "default": 100,
+      "min": 0,
+      "max": 100,
+      "integer": true
+    },
+    "collectCooldownSec": {
+      "type": "number",
+      "title": "收集冷却（秒）",
+      "description": "同一聊天两次自动收集之间的最小间隔；0 表示不设冷却。",
+      "default": 0,
+      "min": 0,
+      "max": 3600,
+      "integer": true
+    },
+    "maxPerMessage": {
+      "type": "number",
+      "title": "单条消息最多收几张",
+      "description": "一条消息里有多张图片时，最多处理前几张。",
+      "default": 3,
+      "min": 1,
+      "max": 10,
+      "integer": true
+    },
+    "excludeKeywords": {
+      "type": "string[]",
+      "title": "排除关键词",
+      "description": "消息正文包含这些词时不自动收藏，每行一个。",
+      "default": [],
+      "maxItems": 20
+    },
+    "meaningEnabled": {
+      "type": "boolean",
+      "title": "允许联网查表情含义",
+      "default": true
+    },
+    "maxStickers": {
+      "type": "number",
+      "title": "表情库上限（张）",
+      "default": 300,
+      "min": 10,
+      "max": 1000,
+      "integer": true
+    }
+  },
+  "settings": {
+    "title": "表情包",
+    "description": "收藏当前聊天里收到的图片表情，偷到后会先把图片给你看，再补名字、情绪（开心、无语、生气等）、标签和用途；检索可以按标签或情绪找。所有动作默认只有主人可用，可在主人与权限里逐项开放。自动收藏是系统行为，只受作用范围限制，不需要工具授权，也不设每日配额。",
+    "sections": [
+      {
+        "title": "检索与容量",
+        "fields": [
+          "listLimit",
+          "maxStickers"
+        ]
+      },
+      {
+        "title": "自动收藏",
+        "fields": [
+          "autoSaveSent",
+          "autoSaveIncoming",
+          "collectProbability",
+          "collectCooldownSec",
+          "maxPerMessage",
+          "excludeKeywords"
+        ]
+      },
+      {
+        "title": "联网查含义",
+        "fields": [
+          "meaningEnabled"
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    "actions",
+    "resources"
+  ]
+}

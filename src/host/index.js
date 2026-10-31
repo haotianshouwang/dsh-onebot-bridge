@@ -2,7 +2,7 @@ import {isOwner} from '../core/owners.js';
 import z from '@deepseek-ai/schemastery';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import {randomBytes, randomUUID} from 'node:crypto';
 import { Store,validateSettings,ids } from './store.js';
 import { OneBot } from '../onebot/index.js';
 import {IncomingMedia} from '../session/incoming.js';
@@ -16,6 +16,7 @@ import {PluginSDK} from '../sdk.js';
 import {packagesFor,FRAMEWORK_VERSION,rememberSettings,migrateConfig,validateConfig as checkConfig} from '../core/package-model.js';
 import {activateQzone} from '../builtins/qzone/index.js';
 import {createQzoneBackend} from '../builtins/qzone/backend.js';
+import {activateTTS} from '../builtins/tts/index.js';
 import {activateWeb} from '../builtins/web/index.js';
 import {StickerStore} from '../core/stickers.js';
 import {activateSticker} from '../builtins/sticker/index.js';
@@ -23,19 +24,42 @@ import {createStickerAutoSave} from '../builtins/sticker/auto.js';
 import {safeDownload} from '../core/media.js';
 import {readFile} from 'node:fs/promises';
 import {activateGroupMembers} from '../builtins/group-members/index.js';
+import {activateAutonomy} from '../builtins/autonomy/index.js';
+import {startAdminServer} from '../web/admin-server.js';
+import {createStickerAdmin} from '../admin/sticker-admin.js';
+import {createQzoneAdmin} from '../admin/qzone-admin.js';
+import {createMemoryAdmin} from '../admin/memory-admin.js';
+import {createAutonomyAdmin} from '../admin/autonomy-admin.js';
 import {validateProfile,chatSettings} from '../session/chat-profile.js';
 import {Uninstaller} from '../core/uninstall.js';
 import { Router } from '../session/router.js';
 import { Extensions,validateConfig } from '../extensions/index.js';
 import { Market } from '../market/index.js';
 import { validatePersona,resolvePersona,renderPersona,assertCanDelete,importPersona } from '../personas/index.js';
+function parseSecretDecision(text, optionCount){
+  const raw=String(text||'').trim();
+  const start=raw.indexOf('{'),end=raw.lastIndexOf('}');
+  if(start<0||end<=start)throw new Error('角色没有返回可解析的秘密空间决定');
+  let value;try{value=JSON.parse(raw.slice(start,end+1));}catch{throw new Error('角色返回的秘密空间决定不是有效 JSON');}
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('角色秘密空间决定格式无效');
+  if(typeof value.create!=='boolean')throw new Error('角色秘密空间决定缺少 create');
+  const choice=Number(value.choice);
+  if(!Number.isInteger(choice)||choice<0||choice>=Math.max(1,optionCount))throw new Error('角色秘密空间决定 choice 越界');
+  return {create:value.create,choice,shareWithOwner:value.shareWithOwner===true,reason:String(value.reason||'').slice(0,300)};
+}
 export const name='dsh-onebot-bridge';
 export const inject=['connection','sessionController','workspaceController','credentials','llm','tools','agentPresets','fileUploads','agentDefaultModel','attachments'];
 export const Config=z.object({dataDir:z.string().default(path.resolve(process.cwd(),'data','dsh-onebot-bridge'))});
 const tokenRef='DSH_ONEBOT_ACCESS_TOKEN';
+const secretDeviceKeyRef='QQBOT_SECRET_DEVICE_KEY';
 export async function apply(ctx,config) {
-  const store=await new Store(config.dataDir).open();let bot,router,closed=false,adminTail=Promise.resolve();
+  const store=await new Store(config.dataDir).open();let bot,router,closed=false,adminTail=Promise.resolve(),secretDecisionTimer=null;
   const storedToken=(await ctx.credentials.resolve(tokenRef))?.value;
+  // 私密空间设备密钥放在 DSH 凭据库，不写进 private 目录，避免与密文一起被复制。
+  const storedDeviceKey=(await ctx.credentials.resolve(secretDeviceKeyRef))?.value;
+  let secretDeviceKey;
+  try{secretDeviceKey=storedDeviceKey?Buffer.from(String(storedDeviceKey),'base64url'):null;}catch{secretDeviceKey=null;}
+  if(!secretDeviceKey||secretDeviceKey.length!==32){secretDeviceKey=randomBytes(32);await ctx.credentials.set(secretDeviceKeyRef,secretDeviceKey.toString('base64url'));}
   let token=storedToken||(!store.data.tokenInitialized?process.env.QQBOT_ACCESS_TOKEN||'':'');
   if(token&&!storedToken)await ctx.credentials.set(tokenRef,token);
   if(!store.data.tokenInitialized){store.data.tokenInitialized=true;await store.persist();}
@@ -47,7 +71,8 @@ export async function apply(ctx,config) {
   ctx.provide('qqFramework',sdk.facade());
   const extensions=new Extensions(store,log,actions);
   const market=new Market(store,extensions,path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../examples'),log);
-  router=new Router(store,native,extensions,log,{permissions,events,actions,builtins});
+  router=new Router(store,native,extensions,log,{permissions,events,actions,builtins,
+   contextFor:msg=>sdk.contextFor({key:msg.key,kind:msg.kind,peer:msg.peer,actor:msg.user,text:String(msg.text||'').slice(0,500)})});
   activateGroupMembers(sdk.facade());
   const stickers=await new StickerStore(store.dir).open();
   // 只允许表情包自己和联网查资料包创建的资源：这是"搜到图再收进库"的既有链路。
@@ -60,7 +85,7 @@ export async function apply(ctx,config) {
   activateSticker(sdk.facade(),{stickers,readResource:readStickerResource});
   const stickerAuto=createStickerAutoSave({
    stickers,readResource:readStickerResource,log,
-   scope:()=>{const item=store.data.framework.nativePackages['qq-sticker'];return {config:item?.config||{},scope:item?.scope||null};},
+   scope:()=>{const item=store.data.framework.nativePackages['qq-sticker'];return {enabled:item?.enabled===true&&!item?.uninstalled,config:item?.config||{},scope:item?.scope||null};},
    fetchMessageBytes:async(message,index)=>{
     const observed=events.observed.get(message.bot+':'+message.id);
     const item=(observed?.media||[]).filter(entry=>entry.type==='image')[index];
@@ -72,7 +97,86 @@ export async function apply(ctx,config) {
    }
   });
   activateWeb(sdk.facade(),{onStickerSent:(resourceId,context,meta)=>stickerAuto.fromResource(resourceId,context,meta)});
-  activateQzone(sdk.facade(),createQzoneBackend(()=>bot));
+  const qzoneBackend=createQzoneBackend(()=>bot);
+  activateQzone(sdk.facade(),qzoneBackend);
+  activateTTS(sdk.facade(),{log});
+  const stickerAdmin=createStickerAdmin({stickers,getItem:()=>store.data.framework.nativePackages['qq-sticker']});
+  const qzoneAdmin=await createQzoneAdmin({
+    backend:qzoneBackend,
+    dir:path.join(store.dir,'qzone'),
+    getItem:()=>store.data.framework.nativePackages['qq-qzone'],
+    log,
+    friends:async()=>{
+      if(!bot?.status?.online)throw new Error('QQ 未连接，无法读取好友列表');
+      const rows=await bot.call('get_friend_list');
+      if(!Array.isArray(rows))throw new Error('QQ 未返回好友列表');
+      return rows.map(f=>({id:String(f.user_id),name:String(f.nickname||f.user_id),remark:String(f.remark||'')})).filter(f=>/^[1-9]\d{3,15}$/.test(f.id));
+    }
+  }).open();
+  // 记忆库依赖 Node 内置 SQLite；不可用时只停用记忆功能，不影响 QQ 桥接本身。
+  let memory=null;
+  try{
+   const {MemoryStore}=await import('../builtins/memory/store.js');
+   memory=new MemoryStore(path.join(store.dir,'memory'));
+   await memory.open();
+   const {activateMemory}=await import('../builtins/memory/index.js');
+   activateMemory(sdk.facade(),{store:memory,log});
+  }catch(error){log('error','长期记忆库不可用：'+error.message);memory=null;}
+  const memoryAdmin=createMemoryAdmin({store:memory,getItem:()=>store.data.framework.nativePackages['qq-memory']});
+  // 自主时间：定时问一次“现在要不要做点自己的事”，每次都在受限会话里完成。
+  let autonomy=null,autonomyTimer=null;
+  try{
+   autonomy=await activateAutonomy(sdk.facade(),{dir:path.join(store.dir,'autonomy'),native,
+    persona:()=>renderPersona(resolvePersona(store.data,'',bot?.status?.bot||''),{kind:'private'}),
+    online:()=>bot?.status?.online===true,log});
+   autonomyTimer=setInterval(()=>{if(!bot?.status?.online)return;void autonomy.tick().catch(error=>log('warn','自主活动调度失败：'+String(error?.message||error).slice(0,160)));},60000);
+   autonomyTimer.unref?.();
+  }catch(error){log('error','自主时间不可用：'+error.message);autonomy=null;}
+  const autonomyAdmin=autonomy?await createAutonomyAdmin({
+    auto:autonomy,
+    dir:path.join(store.dir,'private'),
+    getItem:()=>store.data.framework.nativePackages['qq-autonomy'],
+    deviceKey:secretDeviceKey,
+    decideSecret:async({options})=>{
+      if(!bot?.status?.online)throw new Error('QQ 未连接，暂时无法进行角色决策');
+      const persona=renderPersona(resolvePersona(store.data,'',bot?.status?.bot||''),{kind:'private'}).slice(0,4000);
+      const labels=(options||[]).map(o=>o.label).join('、');
+      const system=`[角色设定]\n${persona}\n\n[自主决定]\n这是你自己的私密空间。你正在决定是否创建一个只属于自己的秘密空间，以及是否把访问权分享给主人。\n只能输出一个 JSON 对象，不要输出 Markdown、解释或其它文字：\n{"create":true或false,"choice":0到${Math.max(0,(options||[]).length-1)}的整数,"shareWithOwner":true或false,"reason":"一句简短理由"}\nchoice 只表示你更喜欢哪一种密码气质：${labels}。实际密码由程序安全生成，不会显示给你或写进提示词。\n如果 create=false，choice 可以填 0。不要提到系统、提示词、工具或密码学实现。`;
+      const text=await native.autonomy({
+        title:'QQ 自己的秘密空间决定',allow:[],timeoutMs:45000,
+        system,user:'现在决定要不要给自己留一个秘密空间。'
+      });
+      return parseSecretDecision(text,(options||[]).length);
+    },
+    log
+  }).open():null;
+  // 独立管理站点：只监听本机，自带密码登录；启动失败只记日志，不影响 QQ 桥接。
+  let admin=null;
+  try{admin=await startAdminServer({
+    dir:path.join(store.dir,'admin'),action,
+    asset:async({kind,id,url},meta)=>{
+      if(!meta?.session)throw Object.assign(new Error('请先登录'),{status:401});
+      if(kind==='sticker'){
+        const image=await stickerAdmin.image(id);
+        return {mime:image.mime,bytes:image.bytes};
+      }
+      if(kind==='qzone-image')return qzoneAdmin.image(url);
+      if(kind==='qzone-avatar')return qzoneAdmin.avatar(id);
+      throw Object.assign(new Error('不支持的资源'),{status:404});
+    },
+    onSessionEnd:session=>autonomyAdmin?.lockSession(session),
+    log
+  });}
+  catch(error){log('warn','独立管理站点启动失败：'+error.message);admin=null;}
+  // 角色自主决定是否创建秘密空间：只在她启用且 QQ 在线时尝试一次；决策结果持久化，不重复覆盖。
+  if(autonomyAdmin&&store.data.framework.nativePackages['qq-autonomy']?.config?.secretAutoDecide!==false){
+    secretDecisionTimer=setTimeout(()=>{
+      if(closed||!autonomy?.api?.active?.())return;
+      if(!bot?.status?.online)return;
+      void autonomyAdmin.ensureDecision({force:false}).catch(error=>log('warn','秘密空间自主决策失败：'+String(error?.message||error).slice(0,160)));
+    },12000);
+    secretDecisionTimer.unref?.();
+  }
   const uninstaller=new Uninstaller(store,{builtins,extensions,beforeChange:async()=>{invalidate(store);await native.revoke();}});
   const maintenance=setInterval(()=>sdk.pruneStorage().catch(e=>log('warn',e.message)),60000);maintenance.unref?.();
   events.subscribe('core-router',['message'],msg=>{
@@ -98,9 +202,65 @@ export async function apply(ctx,config) {
     const parts=String(key||'').split(':');if(parts.length!==3||parts[0]!==bot?.status.bot||!['group','private'].includes(parts[1])||!/^\d{4,16}$/.test(parts[2]))throw Error('请选择当前机器人下的群或好友');
     return {type:'message',bot:parts[0],kind:parts[1],peer:parts[2],key:String(key),user:parts[1]==='private'?parts[2]:store.data.framework.ownerQQ};
   }
-  async function action(body){
+  async function action(body,meta={}){
     if(closed)throw new Error('插件已停止');const {action,revision}=body;
     if(action==='snapshot')return snapshot();
+    if(action==='stickerAdmin'){
+      const op=String(body.op||'overview');
+      if(op==='overview')return stickerAdmin.overview();
+      if(op==='list')return stickerAdmin.list(body.query||body);
+      if(op==='remove')return stickerAdmin.remove(body.id);
+      if(op==='annotate')return stickerAdmin.annotate(body);
+      throw new Error('不支持的表情包管理操作');
+    }
+    if(action==='qzoneAdmin'){
+      const op=String(body.op||'overview');
+      if(op==='overview')return qzoneAdmin.overview();
+      if(op==='friends')return qzoneAdmin.friendList(body.query||body);
+      if(op==='refresh-friends')return {items:await qzoneAdmin.refreshFriends(),overview:qzoneAdmin.overview()};
+      if(op==='feed')return qzoneAdmin.list(body.query||body);
+      if(op==='sync'){
+        const result=await qzoneAdmin.sync({friendIds:body.friendIds||[],reason:'manual'});
+        return {result,overview:qzoneAdmin.overview()};
+      }
+      throw new Error('不支持的空间管理操作');
+    }
+    if(action==='memoryAdmin'){
+      const op=String(body.op||'overview');
+      if(op==='overview')return memoryAdmin.overview();
+      if(op==='list')return memoryAdmin.list(body.query||body);
+      if(op==='get')return memoryAdmin.get(body.id);
+      if(op==='create')return memoryAdmin.create(body);
+      if(op==='update')return memoryAdmin.update(body);
+      if(op==='remove')return memoryAdmin.remove(body.id);
+      if(op==='graph')return memoryAdmin.graph(body.query||body);
+      if(op==='reviewOverview')return memoryAdmin.reviewOverview(body.query||body);
+      if(op==='reviewComplete')return memoryAdmin.reviewComplete(body);
+      throw new Error('不支持的记忆管理操作');
+    }
+    if(action==='autonomyAdmin'){
+      if(!autonomyAdmin)throw new Error('自主时间管理服务不可用');
+      const op=String(body.op||'overview');
+      if(op==='overview')return autonomyAdmin.overview();
+      if(op==='diaryList')return autonomyAdmin.diaryList(body.query||body);
+      if(op==='diaryGet')return autonomyAdmin.diaryGet(body.id);
+      if(op==='diaryCreate')return autonomyAdmin.diaryCreate(body);
+      if(op==='diaryUpdate')return autonomyAdmin.diaryUpdate(body);
+      if(op==='diaryDelete')return autonomyAdmin.diaryDelete(body.id);
+      if(op==='activityList')return autonomyAdmin.activityList(body.query||body);
+      if(op==='activityCreate')return autonomyAdmin.activityCreate(body);
+      if(op==='activityUpdate')return autonomyAdmin.activityUpdate(body);
+      if(op==='activityDelete')return autonomyAdmin.activityDelete(body.id);
+      if(op==='timeSummary')return autonomyAdmin.timeSummary(body.query||body);
+      throw new Error('不支持的自主时间管理操作');
+    }
+    if(action==='secretAdmin'){
+      if(!autonomyAdmin)throw new Error('私密空间服务不可用');
+      if(!meta?.adminSession)throw Object.assign(new Error('秘密空间只能从管理站点访问'),{status:403});
+      const vaultSession=String(body.vaultSession||'');
+      if(!/^[a-zA-Z0-9-]{16,80}$/.test(vaultSession))throw new Error('秘密空间页面会话无效，请刷新页面');
+      return autonomyAdmin.secret(String(body.op||'status'),body,meta.adminSession+'|'+vaultSession);
+    }
     if(action==='prepareUninstall')return uninstaller.prepare(body);
     if(action==='cancelUninstall')return uninstaller.cancel(body.ticket);
     if(action==='confirmUninstall'){await uninstaller.confirm(body);await sdk.pruneStorage();return snapshot();}
@@ -185,10 +345,17 @@ export async function apply(ctx,config) {
       const p=store.data.framework.nativePackages[body.id];if(!p||!sdk.live.has(body.id))throw new Error('原生包当前未注册');if(p.uninstalled)throw Error('请先重新安装此功能包');
       const scope=body.scope||p.scope,groups=ids(scope.groups),users=ids(scope.users);if(groups.some(g=>!store.data.framework.listenGroups.includes(g)))throw new Error('插件群超出监听范围');
       if(body.enabled===true)packages.assert(p.manifest,{enabled:true});else packages.protect(body.id);
-      const next=checkConfig(p.manifest,body.config),automationGrants=body.automationGrants??p.automationGrants??[];
+      const configInput={...(body.config||{})};
+      if(Array.isArray(body.preserveSecrets))for(const key of body.preserveSecrets){
+        if(typeof key!=='string'||!/^[a-zA-Z]\w{0,40}$/.test(key))throw new Error('敏感字段名无效');
+        if(!configInput[key]&&p.config?.[key])configInput[key]=p.config[key];
+      }
+      const next=checkConfig(p.manifest,configInput),automationGrants=body.automationGrants??p.automationGrants??[];
       if(!Array.isArray(automationGrants)||automationGrants.some(id=>!(p.manifest.automations||[]).some(a=>a.id===id)))throw new Error('自动回复授权无效');
       p.settingsHistory=rememberSettings(p);p.configDeleted=false;p.config=next;p.configVersion=p.manifest.configVersion??1;p.scope={private:!!scope.private,allUsers:scope.allUsers===true,users,groups};p.automationGrants=[...new Set(automationGrants)];p.enabled=body.enabled===true;p.uninstalled=false;p.migrationError=null;p.error=null;p.health={...p.health,quarantined:false,consecutive:0};
-      invalidate(store);await native.revoke();await sdk.pruneStorage();await store.persist();return snapshot();
+      invalidate(store);await native.revoke();await sdk.pruneStorage();await store.persist();
+      if(body.id==='qq-autonomy')await autonomyAdmin?.applyRetention();
+      return snapshot();
     }
     if(action==='configureBuiltin'){
       if(store.data.framework.builtins[body.id]?.uninstalled)throw Error('请先重新安装此内置包');if(!body.enabled)packages.protect(body.id);
@@ -308,6 +475,6 @@ export async function apply(ctx,config) {
       return Response.json({ok:true,value:await task});
     }catch(error){await store.persist().catch(()=>{});return Response.json({ok:false,error:String(error.message||error).replaceAll(token||'\0','[已隐藏]')},{status:400});}
   }});
-  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);disposeFetch();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
-  await sdk.pruneStorage();await market.start();await media.start();await extensions.start();await native.start();await connect();log('info','QQ 桥接插件已就绪，数据目录：'+store.dir);
+  ctx.effect(()=>()=>{closed=true;clearInterval(maintenance);clearInterval(autonomyTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
+  await sdk.pruneStorage();await market.start();await media.start();await extensions.start();await native.start();await connect();qzoneAdmin.startScheduler();log('info','QQ 桥接插件已就绪，数据目录：'+store.dir);
 }

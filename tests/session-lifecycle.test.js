@@ -97,15 +97,18 @@ test('空闲超过阈值会退役旧会话并重建',async t=>{
  assert.notEqual(x.runs[1].id,x.runs[0].id);
 });
 
-test('框架代次变化或人设变化会重建会话',async t=>{
+test('框架代次变化保留上下文，人设变化才重建会话',async t=>{
  const x=await setup(t);
  await x.send(message('1'));
  x.store.data.framework.generation++;
  await x.send(message('2'));
- assert.equal(x.created.length,2);
+ assert.equal(x.created.length,1,'权限代次变化只撤销旧任务，不应丢弃会话');
+ assert.equal(x.retired.length,0);
+ assert.equal(x.runs[1].id,x.runs[0].id);
  x.store.data.personas[0].version++;
  await x.send(message('3'));
- assert.equal(x.created.length,3);
+ assert.equal(x.created.length,2);
+ assert.equal(x.retired.length,1);
 });
 
 test('会话在 DSH 侧丢失时本轮自动重建一次并正常回复',async t=>{

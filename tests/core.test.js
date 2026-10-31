@@ -168,6 +168,19 @@ test('group users never inherit owner conversation or tool authorization',async 
  for(const [i,user]of ['10000001','123456'].entries()){await router.receive(message({id:String(i+1),kind:'group',peer:'88888',key:'10000002:group:88888',user,mentions:['10000002']}));await Promise.all([...router.queues.values()]);}
  assert.equal(Object.keys(x.store.data.sessions).length,1);assert.equal(calls[0].s,calls[1].s);assert.notEqual(calls[0].actor,calls[1].actor);assert.equal(calls[1].toolReason,null);
 });
+test('plugin reload keeps the conversation context instead of retiring the session',async t=>{
+ const x=await setup(t),f=x.store.data.framework;f.listenGroups=['88888'];x.store.data.settings.groupEnabled=true;x.store.data.settings.allowedGroups=['88888'];
+ const created=[],resets=[];
+ const native={run:async()=> '回复',create:async msg=>{const session={sessionId:'s'+created.length,generation:f.generation,chatKey:msg.key};created.push(session);return session;},reset:async session=>{resets.push(session.sessionId);},revoke:async()=>{},stop:async()=>{}};
+ const router=new Router(x.store,native,x.extensions,log,x);router.attach(x.bot);
+ const groupMessage=id=>message({id,kind:'group',peer:'88888',key:'10000002:group:88888',mentions:['10000002'],text:'你好'});
+ await router.receive(groupMessage('1'));await Promise.all([...router.queues.values()]);
+ invalidate(x.store); // 插件重载或保存设置：只撤销旧授权，不应丢弃上下文
+ await router.receive(groupMessage('2'));await Promise.all([...router.queues.values()]);
+ assert.equal(created.length,1);
+ assert.equal(resets.length,0);
+ assert.equal(x.store.data.sessions['10000002:group:88888|shared'].generation,f.generation);
+});
 test('accepted or unknown gateway sends never trigger automatic replay',async t=>{
  const x=await setup(t),native={run:async()=>'',reset:async()=>{},revoke:async()=>{},stop:async()=>{}},router=new Router(x.store,native,x.extensions,log,x);router.attach(x.bot);
  x.bot.request=async()=>({outcome:'accepted',data:null});

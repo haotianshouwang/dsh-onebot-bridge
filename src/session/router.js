@@ -35,8 +35,8 @@ export function controlCommand(text){
 }
 
 export class Router {
- constructor(store,native,extensions,log,{permissions,actions,builtins,events}={}){
-  Object.assign(this,{store,native,extensions,log,permissions,actions,builtins,events});
+ constructor(store,native,extensions,log,{permissions,actions,builtins,events,contextFor}={}){
+  Object.assign(this,{store,native,extensions,log,permissions,actions,builtins,events,contextFor});
   this.conversation=new Conversation(store);this.participation=new Participation();this.pokes=new Map();
   if(actions)actions.onSent=(c,id,text)=>{
    this.conversation.sent({bot:c.bot,kind:c.kind,peer:c.peer,key:c.key,id:c.messageId},id,text);
@@ -62,6 +62,8 @@ export class Router {
  // session 只在"代次/人设/空闲过期"时退役；执行身份仍然每轮新建，见 receive() 里的 permissions.issue。
  stampSession(session,job){
   session.personaId=job.persona.id;session.personaVersion=job.persona.version;
+  // 插件重载或设置变更只撤销旧任务与旧授权，不丢弃会话上下文；权限本来就在每轮重新校验。
+  session.generation=this.store.data.framework.generation;
   session.lastActivity=new Date().toISOString();session.boot=this.boot;job.sessionId=session.sessionId;return session;
  }
  sessionExpired(session){
@@ -212,15 +214,17 @@ export class Router {
       let session=this.store.data.sessions[key];
       // 群聊不再每轮重建：DSH 的 session 本身可复用、可自动压缩、可按 id 恢复。
       // 只有代次变化、人设变化或空闲过期才退役；退役失败（会话已被 DSH 清理）不应中断本轮。
-      if(session&&(this.sessionExpired(session)||session.generation!==context.generation||session.personaId!==job.persona.id||session.personaVersion!==job.persona.version)){
-       const reason=this.sessionExpired(session)?'空闲过期或预设不符':session.generation!==context.generation?'框架代次变化':'人设变化';
+      if(session&&(this.sessionExpired(session)||session.personaId!==job.persona.id||session.personaVersion!==job.persona.version)){
+       const reason=this.sessionExpired(session)?'空闲过期或预设不符':'人设变化';
        this.traceSession(job,'退役会话',{sessionId:session.sessionId,reason});
        await this.retireSession(session);delete this.store.data.sessions[key];session=null;
       }
       if(!session){session=await this.native.create(msg);this.store.data.sessions[key]=session;this.traceSession(job,'新建会话',{sessionId:session.sessionId});}
       else this.traceSession(job,'命中会话',{sessionId:session.sessionId,pid:session.boot===this.boot?'same-process':'previous-process'});
       this.stampSession(session,job);job.status='running';await this.store.persist();
-      const replyPrompt=this.builtins.prompt(job.persona,msg)+(job.mode==='agent'&&!this.builtins.enabled('ai-chat')?'\n普通聊天已停用。本轮只处理机器人管理及已授权工具任务；若是闲聊或问候，说明普通聊天已关闭。':'');
+      let replyPrompt=this.builtins.prompt(job.persona,msg)+(job.mode==='agent'&&!this.builtins.enabled('ai-chat')?'\n普通聊天已停用。本轮只处理机器人管理及已授权工具任务；若是闲聊或问候，说明普通聊天已关闭。':'');
+      // 记忆等上下文提供器只读、限时；失败或超时会跳过，不影响本轮回复。
+      if(this.contextFor)try{const extra=await this.contextFor(msg);if(extra)replyPrompt+='\n'+extra;}catch(e){this.log('warn','上下文提供器跳过：'+String(e.message||e).slice(0,160));}
       try{job.reply=await this.styledReply(session.sessionId,job,replyPrompt,context);}
       catch(e){
        // 会话日志已不存在（DSH 侧清理、归档或升级）：重建一次再试。此刻还没有任何内容发送出去。

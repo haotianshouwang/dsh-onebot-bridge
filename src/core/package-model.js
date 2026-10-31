@@ -1,4 +1,4 @@
-export const FRAMEWORK_VERSION='0.8.0';
+export const FRAMEWORK_VERSION='0.13.0';
 const keyPattern=/^[a-zA-Z]\w{0,40}$/;
 const safeKey=k=>keyPattern.test(k)&&!['__proto__','constructor','prototype'].includes(k);
 const plain=x=>x&&typeof x==='object'&&!Array.isArray(x);
@@ -49,8 +49,14 @@ export function validateConfig(manifest,input={}){
   result[key]=structuredClone(value);
  }return result;
 }
+export const PACKAGE_API_VERSION=2;
+const PACKAGE_TYPES=new Set(['native-source','declarative','builtin','market']);
 export function validatePackageMetadata(m){
  if(typeof m.name!=='string'||!m.name.trim()||m.name.length>80||m.description!=null&&(typeof m.description!=='string'||m.description.length>2000))throw new Error('插件名称或说明无效');
+ if(m.apiVersion!=null&&m.apiVersion!==PACKAGE_API_VERSION)throw new Error('插件 apiVersion 必须是 2');
+ if(m.type!=null&&!PACKAGE_TYPES.has(m.type))throw new Error('插件 type 无效');
+ if(m.entry!=null&&(typeof m.entry!=='string'||!m.entry||m.entry.length>200||m.entry.includes('..')||m.entry.startsWith('/')||m.entry.startsWith('\\')))throw new Error('插件 entry 必须是包内相对路径');
+ if(m.permissions!=null&&(!Array.isArray(m.permissions)||m.permissions.length>20||m.permissions.some(p=>typeof p!=='string'||!/^[a-z][a-z0-9.-]{0,40}$/.test(p))))throw new Error('插件 permissions 无效');
  versionTuple(m.version);
  dependencies(m.dependencies);
  const v=m.configVersion??1;if(!Number.isInteger(v)||v<1||v>100)throw new Error('configVersion 须为 1–100');

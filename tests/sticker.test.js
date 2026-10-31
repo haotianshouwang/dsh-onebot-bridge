@@ -11,7 +11,7 @@ async function setup(t,{search,bytes}={}){
  t.after(()=>rm(dir,{recursive:true,force:true}));
  const store=await new Store(dir).open();
  Object.assign(store.data.framework,{listenGroups:[group],listenPrivate:true,enabledActions:[
-  'plugin.qq-sticker.save','plugin.qq-sticker.steal','plugin.qq-sticker.list','plugin.qq-sticker.send','plugin.qq-sticker.explain','plugin.qq-sticker.remove','qq.image.send','qq.media.receive'
+  'plugin.qq-sticker.save','plugin.qq-sticker.steal','plugin.qq-sticker.annotate','plugin.qq-sticker.list','plugin.qq-sticker.send','plugin.qq-sticker.explain','plugin.qq-sticker.remove','qq.image.send','qq.media.receive'
  ]});
  const permissions=new Permissions(store),events=new Events(store,()=>{}),media=new Media(store),actions=new Actions(store,permissions,events,media);
  actions.attach({status:{bot,online:true},request:async()=>({outcome:'confirmed',data:{}})});
@@ -63,6 +63,24 @@ test('偷别人的表情会记录来源，并能检索到',async t=>{
  assert.equal(list.total,1);
 });
 
+test('偷图会回传预览，看完图用 annotate 标情绪并能按情绪检索',async t=>{
+ const x=await setup(t),c=x.context();
+ const stolen=await x.actions.invoke('plugin.qq-sticker.steal',{messageId:'m1',name:'无语猫'},c);
+ assert.equal(stolen.ok,true);
+ assert.equal(stolen.previews.length,1);
+ assert.equal(stolen.previews[0].mediaType,'image/png');
+ assert.match(stolen.instruction,/annotate/);
+ const annotated=await x.actions.invoke('plugin.qq-sticker.annotate',{id:stolen.sticker.id,emotion:'无语',tags:['猫','无奈'],usage:'被无语到时'},c);
+ assert.equal(annotated.ok,true);
+ assert.equal(annotated.sticker.emotion,'无语');
+ const list=await x.actions.invoke('plugin.qq-sticker.list',{emotion:'无语'},c);
+ assert.equal(list.items.length,1);
+ assert.equal(list.items[0].emotion,'无语');
+ assert.match(list.items[0].tags[0],/猫/);
+ await assert.rejects(x.actions.invoke('plugin.qq-sticker.annotate',{id:stolen.sticker.id,emotion:'暴躁'},c),/情绪只能是/);
+ assert.equal((await x.actions.invoke('plugin.qq-sticker.list',{emotion:'开心'},c)).items.length,0);
+});
+
 test('发送表情会经过受控资源并记录使用时间',async t=>{
  const x=await setup(t),c=x.context();
  const saved=await save(x,c);
@@ -83,6 +101,7 @@ test('识别用途会把图片交给模型，并联网查含义',async t=>{
  assert.equal(explained.previews[0].mediaType,'image/png');
  assert.ok(explained.previews[0].base64.length>10,'必须回传图片内容本身');
  assert.equal(explained.meaning.results.length,1);
+ assert.ok(!JSON.stringify(explained.meaning).includes('https://'),'表情含义不应把来源链接带回模型');
  const search=x.invokes.find(i=>i.id==='plugin.qq-web.search');
  assert.match(search.args.query,/什么梗|什么场合/);
 });
@@ -136,4 +155,8 @@ test('旧配置升级到 v2：去掉每日配额并补上自动收藏默认值',
  assert.equal(config.autoSaveIncoming,false);
  assert.equal(config.savePerDay,undefined,'已废弃的每日配额字段应被移除');
  assert.equal(config.maxStickers,300);
+ assert.equal(config.collectProbability,100,'旧配置默认仍全部收集');
+ assert.equal(config.collectCooldownSec,0);
+ assert.equal(config.maxPerMessage,3);
+ assert.deepEqual(config.excludeKeywords,[]);
 });

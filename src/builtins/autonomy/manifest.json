@@ -1,0 +1,259 @@
+{
+  "id": "qq-autonomy",
+  "name": "自主时间",
+  "version": "1.0.0",
+  "bundled": true,
+  "apiVersion": 2,
+  "type": "native-source",
+  "entry": "src/builtins/autonomy/index.js",
+  "description": "让她在空闲时自己写日记、发空间、上网学习、学群里的黑话、翻朋友的空间；默认停用，写入类活动默认关闭。",
+  "dependencies": {
+    "framework": ">=0.12.0"
+  },
+  "configVersion": 1,
+  "capabilities": [
+    "actions",
+    "context",
+    "events"
+  ],
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "title": "启用自主时间",
+      "default": false,
+      "description": "总开关。关闭后不安排任何自主活动，也不注入时间信息。"
+    },
+    "activeHours": {
+      "type": "string",
+      "title": "活动时段",
+      "default": "09:00-23:30",
+      "maxLength": 20,
+      "description": "格式 HH:MM-HH:MM，跨午夜可写 22:00-02:00。"
+    },
+    "runLimitMode": {
+      "type": "string",
+      "title": "自主活动次数策略",
+      "enum": [
+        "recommended",
+        "custom",
+        "unlimited"
+      ],
+      "default": "recommended",
+      "description": "recommended 使用推荐上限；custom 使用自定义上限；unlimited 不设固定业务上限，但调度仍每分钟最多一次并受活动时段约束。"
+    },
+    "maxRunsPerDay": {
+      "type": "number",
+      "title": "每天最多自主活动次数（推荐/自定义）",
+      "default": 8,
+      "min": 1,
+      "max": 1440,
+      "integer": true
+    },
+    "autoRecordActivities": {
+      "type": "boolean",
+      "title": "自动活动写入时间线",
+      "default": true,
+      "description": "自主活动完成后，把开始/结束时间、类别和结果写入本机活动记录；关闭后只保留运行日志。"
+    },
+    "diaryRetentionMode": {
+      "type": "string",
+      "title": "日记保留策略",
+      "enum": [
+        "none",
+        "count",
+        "days"
+      ],
+      "default": "none",
+      "description": "none 不主动按数量删除；count/days 会清理旧日记，执行前请确认。"
+    },
+    "diaryRetentionCount": {
+      "type": "number",
+      "title": "保留日记篇数",
+      "default": 1000,
+      "min": 1,
+      "max": 100000,
+      "integer": true
+    },
+    "diaryRetentionDays": {
+      "type": "number",
+      "title": "日记保留天数",
+      "default": 365,
+      "min": 1,
+      "max": 3650,
+      "integer": true
+    },
+    "activityRetentionMode": {
+      "type": "string",
+      "title": "活动保留策略",
+      "enum": [
+        "none",
+        "count",
+        "days"
+      ],
+      "default": "none"
+    },
+    "activityRetentionCount": {
+      "type": "number",
+      "title": "保留活动条数",
+      "default": 5000,
+      "min": 1,
+      "max": 100000,
+      "integer": true
+    },
+    "activityRetentionDays": {
+      "type": "number",
+      "title": "活动保留天数",
+      "default": 365,
+      "min": 1,
+      "max": 3650,
+      "integer": true
+    },
+    "timelinePageSize": {
+      "type": "number",
+      "title": "时间线每页条数",
+      "default": 50,
+      "min": 20,
+      "max": 200,
+      "integer": true
+    },
+    "diaryEnabled": {
+      "type": "boolean",
+      "title": "自己写日记",
+      "default": true
+    },
+    "diaryHour": {
+      "type": "number",
+      "title": "几点之后写日记",
+      "default": 22,
+      "min": 0,
+      "max": 23,
+      "integer": true
+    },
+    "learnEnabled": {
+      "type": "boolean",
+      "title": "自己上网学习",
+      "default": true
+    },
+    "learnEveryHours": {
+      "type": "number",
+      "title": "学习间隔（小时）",
+      "default": 8,
+      "min": 1,
+      "max": 48,
+      "integer": true
+    },
+    "slangEnabled": {
+      "type": "boolean",
+      "title": "学群里的黑话",
+      "default": true
+    },
+    "slangEveryHours": {
+      "type": "number",
+      "title": "学黑话间隔（小时）",
+      "default": 2,
+      "min": 1,
+      "max": 24,
+      "integer": true
+    },
+    "qzonePostEnabled": {
+      "type": "boolean",
+      "title": "自己发空间说说",
+      "default": false,
+      "description": "默认关闭；打开后按 QQ 空间包自己的每日上限和可见范围发布。"
+    },
+    "browseEnabled": {
+      "type": "boolean",
+      "title": "自己翻空间",
+      "default": false,
+      "description": "需要填写“可浏览的 QQ”，只翻这些人的空间；不绕过空间隐私。"
+    },
+    "browseTargets": {
+      "type": "string[]",
+      "title": "可浏览的 QQ",
+      "default": [],
+      "maxItems": 50,
+      "format": "qq",
+      "description": "留空则不翻空间；建议只填好友或群友。"
+    },
+    "browseEveryHours": {
+      "type": "number",
+      "title": "翻空间间隔（小时）",
+      "default": 4,
+      "min": 1,
+      "max": 48,
+      "integer": true
+    },
+    "commentEnabled": {
+      "type": "boolean",
+      "title": "看到有趣的就评论",
+      "default": false,
+      "description": "默认关闭；打开后每天最多一条，且必须来自本次实际浏览到的说说。"
+    },
+    "secretAutoDecide": {
+      "type": "boolean",
+      "title": "让她自主决定秘密空间",
+      "default": true,
+      "description": "首次启用时由现有受限 Agent 决定是否创建、选择密码气质和是否向主人分享；程序负责生成与封装密码，用户不设置密码。"
+    }
+  },
+  "settings": {
+    "title": "自主时间",
+    "description": "空闲时她可以自己写日记、查资料、学群里的黑话，也可以发空间或翻朋友的空间。所有活动都走受限会话：不能发 QQ 消息，只使用白名单动作；发空间和评论默认关闭，有每日上限和冷却。群聊缓冲只在内存里保留最近消息用于学黑话，不写盘；日记保存在本机插件数据目录。",
+    "sections": [
+      {
+        "title": "总开关与节奏",
+        "fields": [
+          "enabled",
+          "activeHours",
+          "runLimitMode",
+          "maxRunsPerDay",
+          "autoRecordActivities"
+        ]
+      },
+      {
+        "title": "日记与学习",
+        "fields": [
+          "diaryEnabled",
+          "diaryHour",
+          "learnEnabled",
+          "learnEveryHours",
+          "slangEnabled",
+          "slangEveryHours"
+        ]
+      },
+      {
+        "title": "保留与分页",
+        "fields": [
+          "diaryRetentionMode",
+          "diaryRetentionCount",
+          "diaryRetentionDays",
+          "activityRetentionMode",
+          "activityRetentionCount",
+          "activityRetentionDays",
+          "timelinePageSize"
+        ]
+      },
+      {
+        "title": "空间",
+        "fields": [
+          "qzonePostEnabled",
+          "browseEnabled",
+          "browseTargets",
+          "browseEveryHours",
+          "commentEnabled"
+        ]
+      },
+      {
+        "title": "秘密空间",
+        "fields": [
+          "secretAutoDecide"
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    "actions",
+    "context",
+    "events"
+  ]
+}

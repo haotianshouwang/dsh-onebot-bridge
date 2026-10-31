@@ -45,13 +45,15 @@ test('image search returns opaque current-chat candidates and image-send validat
  assert.equal(search.ok,true);
  assert.equal(search.results.length,1);
  assert.equal(search.results[0].title,'一只鲸鱼');
- assert.equal(search.results[0].sourceUrl,'https://example.com/source');
+ assert.equal(search.results[0].sourceUrl,undefined);
  assert.equal(search.results[0].imageUrl,undefined);
+ assert.match(search.instruction,/不要输出图片网址/);
  await assert.rejects(x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c),/尚未向当前用户开放/);
  for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
  const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
  assert.equal(sent.ok,true);
- assert.equal(sent.sourceUrl,'https://example.com/source');
+ assert.equal(sent.sourceUrl,undefined);
+ assert.match(sent.instruction,/不要输出图片网址/);
  assert.equal(downloads.length,2);
  assert.equal(downloads[0].url,'https://cdn.example.com/animal.png?size=large');
  assert.equal(downloads[1].url,'https://cdn.example.com/animal.png?size=large');
@@ -62,6 +64,15 @@ test('image search returns opaque current-chat candidates and image-send validat
  const repeated=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
  assert.equal(repeated.ok,false);
  assert.match(repeated.error,/当前用户/);
+});
+test('image replies can opt back into source links',async t=>{
+ const x=await setupImages(t,async url=>({url,contentType:'text/html',body:imageHtml}),async()=>png);
+ x.item.config.imageSourceLink=true;
+ const c=x.permissions.issue(message(),'chat'),search=await x.actions.invoke('plugin.qq-web.image-search',{query:'鲸鱼'},c);
+ assert.equal(search.results[0].sourceUrl,'https://example.com/source');
+ for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
+ const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
+ assert.equal(sent.sourceUrl,'https://example.com/source');
 });
 test('image-send rejects arbitrary URLs and other users candidates, and reports invalid image bytes',async t=>{
  const x=await setupImages(t,async url=>({url,contentType:'text/html',body:imageHtml}),async()=>png);

@@ -4,12 +4,12 @@ import {createStickerAutoSave} from '../src/builtins/sticker/auto.js';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
 const groupContext={actor:'10000001',peer:'88888',kind:'group',key:'10000002:group:88888'};
 
-function harness({config={},scope={private:true,allUsers:false,users:['10000001'],groups:['88888']},readError,fetchError}={}){
+function harness({config={},scope={private:true,allUsers:false,users:['10000001'],groups:['88888']},enabled,readError,fetchError}={}){
  const saved=[],logs=[];
  const stickers={save:async({bytes,name,tags,source})=>{saved.push({bytes,name,source});return {sticker:{id:'s'+(saved.length),name},deduped:false};}};
  const auto=createStickerAutoSave({
   stickers,
-  scope:()=>({config:{autoSaveSent:false,autoSaveIncoming:false,...config},scope}),
+  scope:()=>({enabled,config:{autoSaveSent:false,autoSaveIncoming:false,...config},scope}),
   readResource:async()=>{if(readError)throw new Error(readError);return png;},
   fetchMessageBytes:async()=>{if(fetchError)throw new Error(fetchError);return png;},
   log:(level,message)=>logs.push({level,message})
@@ -56,6 +56,12 @@ test('收图失败不会打断处理',async()=>{
  const h=harness({config:{autoSaveIncoming:true},fetchError:'网关不可用'});
  assert.equal(await h.auto.fromMessage({parts:[{type:'image'}]},groupContext),null);
  assert.match(h.logs.at(-1).message,/自动收藏失败/);
+});
+
+test('插件停用后自动收藏旁路立即停止',async()=>{
+ const h=harness({config:{autoSaveIncoming:true},enabled:false});
+ assert.equal(await h.auto.fromMessage({parts:[{type:'image'}]},groupContext),null);
+ assert.equal(h.saved.length,0);
 });
 
 test('没有图片的消息不触发收藏',async()=>{

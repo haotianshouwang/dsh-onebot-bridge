@@ -1,0 +1,134 @@
+{
+  "id": "qq-memory",
+  "name": "长期记忆",
+  "version": "1.0.0",
+  "bundled": true,
+  "apiVersion": 2,
+  "type": "native-source",
+  "entry": "src/builtins/memory/index.js",
+  "description": "把明确要求记住的信息存进本地 SQLite，用嵌入模型做语义检索，并在回复前自动带上一小段相关记忆。",
+  "dependencies": {
+    "framework": ">=0.10.0"
+  },
+  "configVersion": 1,
+  "capabilities": [
+    "actions",
+    "context"
+  ],
+  "configSchema": {
+    "autoRecall": {
+      "type": "boolean",
+      "title": "回复前自动回忆",
+      "default": true,
+      "description": "每轮回复前，按当前消息检索本聊天可见的记忆，最多注入一小段；失败或超时会静默跳过。"
+    },
+    "autoRecallMode": {
+      "type": "string",
+      "title": "自动回忆方式",
+      "enum": [
+        "semantic",
+        "keyword"
+      ],
+      "default": "semantic",
+      "description": "semantic 用嵌入模型做语义检索，会多一次网络请求（约 0.2–1 秒）；keyword 只做关键词匹配，更快但不识别同义改写。"
+    },
+    "autoRecallLimit": {
+      "type": "number",
+      "title": "自动回忆条数",
+      "default": 6,
+      "min": 1,
+      "max": 12,
+      "integer": true
+    },
+    "contextChars": {
+      "type": "number",
+      "title": "注入记忆最多字数",
+      "default": 800,
+      "min": 200,
+      "max": 2000,
+      "integer": true
+    },
+    "embeddingProvider": {
+      "type": "string",
+      "title": "嵌入模型来源",
+      "enum": [
+        "siliconflow",
+        "openai",
+        "off"
+      ],
+      "default": "siliconflow",
+      "description": "siliconflow：硅基流动 BAAI/bge-m3；openai：任意兼容 /v1/embeddings 的服务（如本机 Ollama）；off：只用关键词。"
+    },
+    "embeddingUrl": {
+      "type": "string",
+      "title": "嵌入模型地址",
+      "default": "",
+      "maxLength": 300,
+      "description": "留空时 siliconflow 使用官方地址；openai 必须填写，例如 http://127.0.0.1:11434/v1/embeddings。"
+    },
+    "embeddingModel": {
+      "type": "string",
+      "title": "嵌入模型",
+      "default": "BAAI/bge-m3",
+      "maxLength": 120
+    },
+    "embeddingKey": {
+      "type": "string",
+      "title": "嵌入模型密钥",
+      "default": "",
+      "maxLength": 300,
+      "description": "留空则读环境变量 SILICONFLOW_API_KEY（openai 读 MEMORY_API_KEY）；填写后会保存在本机状态文件里，注意不要连同 data 目录一起分发。"
+    },
+    "maxMemories": {
+      "type": "number",
+      "title": "最多记忆条数",
+      "default": 2000,
+      "min": 100,
+      "max": 10000,
+      "integer": true
+    },
+    "retentionDays": {
+      "type": "number",
+      "title": "保留天数",
+      "default": 730,
+      "min": 30,
+      "max": 3650,
+      "integer": true
+    }
+  },
+  "settings": {
+    "title": "长期记忆",
+    "description": "记忆保存在本机 SQLite，按“通用 / 某个用户 / 某个群”隔离。动作默认停用，需要主人在“主人与权限”里启用 plugin.qq-memory.remember、plugin.qq-memory.recall 等动作；自动回忆只读取当前聊天可见的记忆，不额外发送 QQ 消息。",
+    "sections": [
+      {
+        "title": "自动回忆",
+        "fields": [
+          "autoRecall",
+          "autoRecallMode",
+          "autoRecallLimit",
+          "contextChars"
+        ]
+      },
+      {
+        "title": "嵌入模型（语义检索）",
+        "fields": [
+          "embeddingProvider",
+          "embeddingUrl",
+          "embeddingModel",
+          "embeddingKey"
+        ]
+      },
+      {
+        "title": "容量与清理",
+        "fields": [
+          "maxMemories",
+          "retentionDays"
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    "actions",
+    "context"
+  ]
+}

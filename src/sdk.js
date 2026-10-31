@@ -1,4 +1,5 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {isOwner} from './core/owners.js';
 import {validateConfig,validatePackageMetadata,migrateConfig,packagesFor,rememberSettings} from './core/package-model.js';
 const safeId=/^qq-[a-z0-9][a-z0-9-]{0,38}$/;
 const view=e=>{const out=structuredClone(e);delete out.flag;if(out.parts)out.parts=out.parts.map(p=>p.type==='text'?{type:'text',data:{text:String(p.data.text||'')}}:{type:p.type,data:{}});return Object.freeze(out);};
@@ -9,11 +10,11 @@ const limited=(work,ms,controller)=>new Promise((resolve,reject)=>{
 export class PluginSDK {
  #eventTickets=new WeakMap();
  constructor({store,permissions,actions,events,media,onChange,automaticReply,log=()=>{}}){
-  Object.assign(this,{store,permissions,actions,events,media,onChange,automaticReply,log});this.live=new Map();this.pages=new Map();this.calls=new AsyncLocalStorage();this.tails=new Map();this.waiting=new Map();this.owned=new Map();
+  Object.assign(this,{store,permissions,actions,events,media,onChange,automaticReply,log});this.live=new Map();this.pages=new Map();this.calls=new AsyncLocalStorage();this.tails=new Map();this.waiting=new Map();this.owned=new Map();this.contextProviders=new Map();
   store.data.framework.nativePackages||={};store.data.framework.pluginData||={};this.packages=packagesFor(store);
   for(const p of Object.values(store.data.framework.nativePackages))p.registered=false;
  }
- facade(){return Object.freeze({apiVersion:2,features:['settings-pages','dependencies','config-migrations','event-replies','fault-isolation','shared-queries'],catalog:()=>this.actions.catalog(),registerTrustedPackage:m=>this.register(m)});}
+ facade(){return Object.freeze({apiVersion:2,features:['settings-pages','dependencies','config-migrations','event-replies','fault-isolation','shared-queries','context-providers'],catalog:()=>this.actions.catalog(),registerTrustedPackage:m=>this.register(m)});}
  changed(reason){try{void Promise.resolve(this.onChange?.(reason)).catch(e=>this.log('warn',e.message));}catch(e){this.log('warn',e.message);}}
  active(id){const p=this.store.data.framework.nativePackages[id];return this.live.has(id)&&p?.enabled&&!p.uninstalled&&!p.health?.quarantined&&!p.migrationError&&!this.packages.problems(p.manifest,{enabled:true}).length;}
  async hook(id,stage,work,timeout=5000){
@@ -30,8 +31,8 @@ export class PluginSDK {
   const id=manifest?.id;
   if(!safeId.test(id)||!manifest.name||String(manifest.name).length>80||!/^\d+\.\d+\.\d+$/.test(manifest.version||''))throw new Error('原生包元数据无效');
   if(this.live.has(id)||this.store.data.extensions[id])throw new Error('原生包 ID 已被注册');
-  if(!Array.isArray(manifest.capabilities)||manifest.capabilities.some(x=>!['events','actions','resources','storage','automatic-replies'].includes(x)))throw new Error('原生包能力声明无效');
-  const m=structuredClone({...manifest,runtime:'trusted-native'});validatePackageMetadata(m);
+  if(!Array.isArray(manifest.capabilities)||manifest.capabilities.some(x=>!['events','actions','resources','storage','automatic-replies','context'].includes(x)))throw new Error('原生包能力声明无效');
+  const m=structuredClone({apiVersion:2,type:'native-source',...manifest,runtime:'trusted-native'});validatePackageMetadata(m);
   const automations=m.automations||[];
   if(!Array.isArray(automations)||automations.length>10||new Set(automations.map(a=>a.id)).size!==automations.length)throw new Error('自动回复声明无效');
   for(const a of automations)if(a.configGate&&m.configSchema?.[a.configGate]?.type!=='boolean'||!/^[a-z][a-z0-9-]{0,20}$/.test(a.id)||!['group_increase','group_decrease','group_admin','group_ban','notify'].includes(a.event)||typeof a.title!=='string')throw new Error('自动回复声明无效');
@@ -56,7 +57,10 @@ export class PluginSDK {
    this.checkLease();this.store.data.framework.pluginData[id]=JSON.parse(encoded);await this.store.persist();return structuredClone(value);
   };
   const api=Object.freeze({
-   id,apiVersion:2,getConfig:()=>structuredClone(item.config),getScope:()=>({...structuredClone(item.scope),groups:item.scope.groups.filter(g=>this.store.data.framework.listenGroups.includes(g))}),reject:message=>{throw Object.assign(new Error(String(message)),{code:'PLUGIN_INPUT'});},
+   id,apiVersion:2,active:()=>this.active(id),getConfig:()=>structuredClone(item.config),getScope:()=>({...structuredClone(item.scope),groups:item.scope.groups.filter(g=>this.store.data.framework.listenGroups.includes(g))}),reject:message=>{throw Object.assign(new Error(String(message)),{code:'PLUGIN_INPUT'});},
+   isOwner:context=>isOwner(this.store.data.framework,context?.actor),
+   // 让插件把长任务移出当前回调的异步上下文：否则回调结束后，任务里的工具调用会继承已失效的租约。
+   detach:work=>this.calls.exit(work),
    on:(types,handler)=>{
     permit('events');if(typeof handler!=='function'||!Array.isArray(types)||types.some(t=>!['message','notice','request','meta'].includes(t)))throw new Error('事件订阅无效');
     const dispose=this.events.subscribe('native:'+id+':'+disposers.length,types,e=>{
@@ -91,6 +95,11 @@ export class PluginSDK {
     this.pages.set(id,{definition:structuredClone(definition),provider});return()=>this.pages.delete(id);
    },
    invoke:(capability,args,context,signal)=>{check(context);return this.actions.invoke(capability,args,context,signal);},
+   registerContextProvider:provider=>{
+    permit('context');if(typeof provider!=='function')throw new Error('上下文提供器须为函数');
+    const key='native:'+id+':'+disposers.length;this.contextProviders.set(key,{id,provider});
+    const dispose=()=>this.contextProviders.delete(key);disposers.push(dispose);return dispose;
+   },
    putResource:(bytes,context,options={})=>{permit('resources');check(context);return this.media.put(bytes,{...options,key:context.key,plugin:id});},
    automaticReply:async(event,automationId,text)=>{
     permit('automatic-replies');this.checkLease();const ticket=this.#eventTickets.get(event),definition=automations.find(a=>a.id===automationId);
@@ -126,6 +135,21 @@ export class PluginSDK {
     ['total','offset'].some(k=>result[k]!=null&&(!Number.isSafeInteger(result[k])||result[k]<0))||result.hasMore!=null&&typeof result.hasMore!=='boolean')throw new Error('插件设置页数据格式无效');
   return JSON.parse(JSON.stringify(result));},5000);
  }
+ // 回复前向已启用的包取一小段上下文（长期记忆等）。提供器只读、超时即跳过，失败不影响本轮。
+ async contextFor(input){
+  const parts=[];
+  for(const {id,provider} of [...this.contextProviders.values()]){
+   if(!this.active(id))continue;
+   const controller=new AbortController();
+   try{
+    const text=await limited(()=>provider(Object.freeze({...input})),1200,controller);
+    if(typeof text==='string'&&text.trim())parts.push(text.trim());
+   }catch(error){
+    this.log('warn','QQ 上下文提供器跳过：'+String(error?.message||error).slice(0,160));
+   }
+  }
+  return parts.join('\n').slice(0,2000);
+ }
  async pruneStorage(){
   let changed=false;
   for(const [id,item]of Object.entries(this.store.data.framework.nativePackages)){
@@ -138,5 +162,5 @@ export class PluginSDK {
   }
   if(changed)await this.store.persist();return changed;
  }
- async stop(){for(const [id,ds]of this.owned){const p=this.store.data.framework.nativePackages[id];if(p)p.registered=false;for(const d of ds.reverse())d();}this.live.clear();this.pages.clear();this.owned.clear();}
+ async stop(){for(const [id,ds]of this.owned){const p=this.store.data.framework.nativePackages[id];if(p)p.registered=false;for(const d of ds.reverse())d();}this.live.clear();this.pages.clear();this.owned.clear();this.contextProviders.clear();}
 }
