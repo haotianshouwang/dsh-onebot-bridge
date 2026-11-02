@@ -55,7 +55,7 @@ export class ReplyGate{
  admitIntent(msg,wake,s,d){
   if(d.reason==='addressed'){wake.direct=true;wake.contextual=false;wake.ambient=false;return true;}
   if(d.reason!=='related'||(s.groupReplyMode||(s.groupMentionOnly?'direct':'smart'))==='direct')return false;
-  if(s.groupReplyMode==='all')return true;
+  if(s.freeMode||s.groupReplyMode==='all')return true;
   const state=this.groups.get(msg.key),now=this.now();if(!state)return false;
   state.recent=state.recent.filter(t=>now-t<60000);
   if(state.last&&now-state.last<(s.groupReplyCooldown??30)*1000||state.recent.length>=(s.groupAutoLimit??2)||this.random()*100>=(s.groupReplyProbability??10))return false;

@@ -22,7 +22,7 @@ export interface NativePackageManifest {
 }
 export interface QQPackageSDK {
  readonly id:string;readonly apiVersion:2;
- active():boolean;getConfig():Record<string,unknown>;getScope():PluginScope;reject(message:string):never;isOwner(context:QQContext):boolean;detach(work:()=>void):void;
+ active():boolean;businessLimitsEnabled():boolean;getConfig():Record<string,unknown>;getScope():PluginScope;reject(message:string):never;isOwner(context:QQContext):boolean;detach(work:()=>void):void;
  on(types:('message'|'notice'|'request'|'meta')[],handler:(event:QQEvent,context:QQContext|null,signal:AbortSignal)=>void|Promise<void>):()=>void;
  action(name:string,definition:{description:string;ownerOnly?:boolean;publicSafe?:boolean;mutating?:boolean;timeoutMs?:number;parameters:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:false}},handler:(args:Record<string,unknown>,context:QQContext,signal:AbortSignal)=>unknown|Promise<unknown>):()=>void;
  settings(definition:SettingsDefinition,provider?:(query:Record<string,unknown>)=>PageData|Promise<PageData>):()=>void;

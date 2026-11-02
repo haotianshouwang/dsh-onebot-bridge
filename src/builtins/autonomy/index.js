@@ -15,7 +15,12 @@ export const manifest = {
   dependencies: { framework: '>=0.12.0' }, configVersion: 1,
   capabilities: ['actions', 'context', 'events'],
   configSchema: {
+    freeMode: {type: 'boolean', title: '自由活动模式', default: false, description: '取消日记、学习、学黑话等本地自主活动的业务次数上限；主动联系仍受安静时段、每日上限、最短间隔、社交精力和内容判断约束。'},
+    groupProactiveEnabled: {type: 'boolean', title: '群冷场时主动发言', default: false, description: '仅在已监听且本插件作用范围内的群，根据真实聊天背景决定是否发言。'},
+    groupInactiveMinutes: {type: 'number', title: '群冷场多久后考虑发言（分钟）', default: 60, min: 5, max: 10080, integer: true},
     enabled: { type: 'boolean', title: '启用自主时间', default: false, description: '总开关。关闭后不安排任何自主活动，也不注入时间信息。' },
+    sleepAt: { type: 'string', title: '入睡时间', default: '00:30', maxLength: 5, description: '格式 HH:MM。' },
+    wakeAt: { type: 'string', title: '起床时间', default: '08:30', maxLength: 5, description: '格式 HH:MM。' },
     activeHours: { type: 'string', title: '活动时段', default: '09:00-23:30', maxLength: 20, description: '格式 HH:MM-HH:MM，跨午夜可写 22:00-02:00。' },
     runLimitMode: { type: 'string', title: '自主活动次数策略', enum: ['recommended', 'custom', 'unlimited'], default: 'recommended', description: 'recommended 使用推荐上限；custom 使用自定义上限；unlimited 不设固定业务上限，但调度仍每分钟最多一次并受活动时段约束。' },
     maxRunsPerDay: { type: 'number', title: '每天最多自主活动次数（推荐/自定义）', default: 8, min: 1, max: 1440, integer: true },
@@ -48,18 +53,19 @@ export const manifest = {
     proactiveMaxChars: { type: 'number', title: '主动消息最多字数', default: 240, min: 40, max: 500, integer: true },
     proactiveAllowTask: { type: 'boolean', title: '允许任务完成通知', default: false, description: '任务进入 done 且主动联系开启时，允许生成一条受频率限制的通知。' },
     proactiveAllowLearning: { type: 'boolean', title: '允许学习进展通知', default: false, description: '学习活动产生真实结果后，允许生成一条受频率限制的通知。' },
+    proactiveAllowGroupStories: {type: 'boolean', title: '允许群聊见闻私聊分享', default: false, description: '情绪与见闻插件发现真实话题后，允许她给主人私聊分享；发送前再次核对来源范围。'},
     taskRunnerEnabled: { type: 'boolean', title: '允许自动推进持久化任务', default: false, description: '默认关闭。开启后只推进已明确进入 planning/executing 的任务，每步必须有工具结果；只允许安全的查询/记忆工具，不发 QQ 消息。' }
   },
   settings: {
     title: '自主时间',
     description: '空闲时她可以自己写日记、查资料、学群里的黑话，也可以发空间或翻朋友的空间。所有活动都走受限会话：不能发 QQ 消息，只使用白名单动作；发空间和评论默认关闭，有每日上限和冷却。群聊缓冲只在内存里保留最近消息用于学黑话，不写盘；日记保存在本机插件数据目录。',
     sections: [
-      { title: '总开关与节奏', fields: ['enabled', 'activeHours', 'runLimitMode', 'maxRunsPerDay', 'autoRecordActivities'] },
+      { title: '总开关与节奏', fields: ['enabled', 'freeMode', 'sleepAt', 'wakeAt', 'groupProactiveEnabled', 'groupInactiveMinutes', 'activeHours', 'runLimitMode', 'maxRunsPerDay', 'autoRecordActivities'] },
       { title: '日记与学习', fields: ['diaryEnabled', 'diaryHour', 'learnEnabled', 'learnEveryHours', 'slangEnabled', 'slangEveryHours'] },
       { title: '保留与分页', fields: ['diaryRetentionMode', 'diaryRetentionCount', 'diaryRetentionDays', 'activityRetentionMode', 'activityRetentionCount', 'activityRetentionDays', 'timelinePageSize'] },
       { title: '空间', fields: ['qzonePostEnabled', 'browseEnabled', 'browseTargets', 'browseEveryHours', 'commentEnabled'] },
       { title: '秘密空间', fields: ['secretAutoDecide'] },
-      { title: '主动联系', fields: ['proactiveEnabled', 'proactiveInactiveMinutes', 'proactiveDailyLimit', 'proactiveMinIntervalMinutes', 'proactiveQuietHours', 'proactiveAllowCasual', 'proactiveAllowTask', 'proactiveAllowLearning', 'proactiveMaxChars'] },
+      { title: '主动联系', fields: ['proactiveEnabled', 'proactiveInactiveMinutes', 'proactiveDailyLimit', 'proactiveMinIntervalMinutes', 'proactiveQuietHours', 'proactiveAllowCasual', 'proactiveAllowTask', 'proactiveAllowLearning', 'proactiveAllowGroupStories', 'proactiveMaxChars'] },
       { title: '任务执行', fields: ['taskRunnerEnabled'] }
     ]
   }
@@ -436,7 +442,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     const at = now();
     const config = api.getConfig();
     if (config.enabled !== true) api.reject('请先在设置里启用自主时间');
-    if (!withinHours(config.activeHours, at)) api.reject('当前不在活动时段');
+    if (!config.freeMode && !withinHours(config.activeHours, at)) api.reject('当前不在活动时段');
     void api.detach(() => tick(at, { force: args.activity }).catch(error => log('warn', '自主活动调度失败：' + String(error?.message || error).slice(0, 160))));
     return { ok: true, scheduled: args.activity, instruction: '已经安排下去，过一会儿在设置页看结果；不要现在编造做完的内容。' };
   });
@@ -527,7 +533,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
   };
 
   const runLimitReached = (config, at) => {
-    if (config.runLimitMode === 'unlimited') return false;
+    if (config.freeMode || config.runLimitMode === 'unlimited') return false;
     const limit = config.runLimitMode === 'recommended' ? 8 : Math.max(1, Math.min(1440, Number(config.maxRunsPerDay) || 8));
     return store.total(at) >= limit;
   };
@@ -535,7 +541,7 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
   const choose = at => {
     const config = api.getConfig();
     if (config.enabled !== true) return null;
-    if (!withinHours(config.activeHours, at)) return null;
+    if (!config.freeMode && !withinHours(config.activeHours, at)) return null;
     if (runLimitReached(config, at)) return null;
     const hour = new Date(at).getHours();
     if (config.diaryEnabled && hour >= Math.min(23, Math.max(0, Number(config.diaryHour) || 22)) && store.count('diary', at) === 0 && store.due('diary', 6, at)) return 'diary';
@@ -550,7 +556,10 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
   // 这里只检查结构摘要，不复制正文；失败时明确返回原因，不再写 ok:true。
   const verifyTools = (type, tools) => {
     if (!Array.isArray(tools) || !tools.length) return {ok: false, error: '没有收到工具调用审计，不能证明活动已执行'};
-    const good = id => tools.find(row => row.capability === id && row.ok === true && !['failed', 'denied', 'unknown'].includes(row.outcome));
+    const good = id => tools.find(row => {
+      const state = row.state || row.outcome;
+      return row.capability === id && row.ok === true && !['failed', 'denied', 'unknown', 'cancelled'].includes(state);
+    });
     if (type === 'diary') {
       const row = good('plugin.qq-autonomy.diary-write');
       return row && row.summary?.id ? {ok: true} : {ok: false, error: '日记工具没有成功保存记录'};
@@ -578,7 +587,9 @@ export async function activateAutonomy(framework, { dir, native, persona = () =>
     }
     if (type === 'qzone') {
       const publish = good('plugin.qq-qzone.publish');
-      return publish && publish.outcome === 'confirmed' ? {ok: true} : {ok: false, error: '空间说说没有确认发布成功'};
+      return publish && publish.state === 'confirmed'
+        ? {ok: true}
+        : {ok: false, error: '空间说说只完成提交，尚未回读确认发布成功'};
     }
     return {ok: false, error: '未知自主活动'};
   };

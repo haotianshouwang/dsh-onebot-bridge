@@ -218,7 +218,7 @@ export function activateMemory(framework, { store, embed = embedOne, log } = {})
     const filter = args.scope && args.scope !== 'auto' ? args.scope : null;
     if (filter && !SCOPES.includes(filter)) api.reject('记忆范围无效');
     const { vector, model, note } = await embedQuietly(query, config, { signal, timeoutMs: RECALL_EMBED_TIMEOUT });
-    const rows = store.recall({ actor: context.actor, group, query, vector, model, limit: filter ? 20 : limit });
+    const rows = store.recall({ actor: context.actor, group, sharedOwner: context.sharedOwner, query, vector, model, limit: filter ? 20 : limit });
     const items = rows.filter(row => !filter || row.scope === filter).slice(0, limit).map(row => ({ ...publicRow(row), score: row.score }));
     if (items.length) store.markUsed(items.map(item => item.id));
     return {
@@ -290,7 +290,7 @@ export function activateMemory(framework, { store, embed = embedOne, log } = {})
         vector = null; model = '';
       }
     }
-    const rows = store.recall({ actor: input.actor, group: input.kind === 'group' ? input.peer : '', query: text, vector, model, limit });
+    const rows = store.recall({ actor: input.actor, group: input.kind === 'group' ? input.peer : '', sharedOwner: input.owner, query: text, vector, model, limit });
     if (!rows.length) return '';
     try { store.markUsed(rows.map(row => row.id)); } catch { /* 计数失败不影响回复 */ }
     return memoryBlock(rows, Math.max(200, Math.min(2000, Number(config.contextChars) || 800)), Date.now());

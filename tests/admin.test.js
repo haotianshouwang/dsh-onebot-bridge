@@ -78,6 +78,18 @@ test('管理站点：设置密码、登录会话、CSRF、动作白名单与退�
  assert.equal(page.headers.get('x-frame-options'),'DENY');
 });
 
+test('管理站点：Three.js 星图模块由本地静态资源提供',async t=>{
+ const dir=await temp(t),port=await freePort();
+ const server=await startAdminServer({dir,port,action:async()=>({}),log:()=>{}});
+ t.after(()=>server.close());
+ const response=await fetch('http://127.0.0.1:'+port+'/assets/three.module.js');
+ assert.equal(response.status,200);
+ assert.match(response.headers.get('content-type') || '',/^text\/javascript/);
+ const source=await response.text();
+ assert.match(source,/WebGLRenderer/);
+ assert.match(source,/export/);
+});
+
 test('图片资源按管理会话鉴权，动作携带会话元数据，退出时通知锁定',async t=>{
  const dir=await temp(t),port=await freePort();let seen=null;const ended=[];
  const server=await startAdminServer({

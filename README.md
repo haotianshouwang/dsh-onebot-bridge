@@ -13,6 +13,89 @@
 
 DeepSeek Harness 0.2.1-rc.2 的原生 QQ 插件框架。入口：账号菜单 → 设置 → **QQ 框架**；独立管理站点：<http://127.0.0.1:3097>（「夜航控制台」）。
 
+## 安装教程
+
+以下步骤适用于 Windows 10/11。建议先用测试 QQ 和测试群验证，再接入日常账号。
+
+### 1. 准备环境
+
+- 安装 Node.js **22.13 或更高版本**，在 PowerShell 中确认：`node --version`。
+- 准备 DeepSeek Harness **0.2.1-rc.2**。
+- 安装并配置 NapCatQQ，启用 OneBot 11 WebSocket。默认管理页面是 `http://127.0.0.1:6099/webui`。
+- 确认 DSH 与 NapCat 的端口、WebSocket 地址和访问令牌没有冲突。
+
+### 2. 安装插件
+
+在 PowerShell 中把仓库克隆到 DSH 所在目录的 `plugins` 下，或直接把插件目录复制到该位置：
+
+```powershell
+cd F:\大肥鱼\plugins
+git clone https://github.com/haotianshouwang/dsh-onebot-bridge.git
+cd .\dsh-onebot-bridge
+npm install
+```
+
+如果你使用的是已经下载好的源码包，只需进入 `dsh-onebot-bridge` 目录执行 `npm install`。安装完成后，在 DSH 的插件管理中启用本插件；宿主目录中的 `start.cmd` 会同时启动 NapCat 和 DSH。
+
+### 3. 启动与首次配置
+
+在宿主目录执行：
+
+```powershell
+cd F:\大肥鱼
+.\start.cmd
+```
+
+启动后可访问：
+
+- DSH：`http://127.0.0.1:3080`
+- 夜航控制台：`http://127.0.0.1:3097`
+- NapCat WebUI：`http://127.0.0.1:6099/webui`
+
+首次进入夜航控制台时设置本机管理密码。然后依次配置 OneBot WebSocket、主人 QQ、模型和动作权限；在“监听”里选择私聊和群范围，在“聊天”里设置群是否需要 @。需要使用主动能力时，再在“自主时间”中启用长期记忆、自主活动和对应动作授权。
+
+### 4. 记忆与自主时间
+
+长期记忆默认按当前聊天可见范围检索：主人形成的用户事实会跨私聊和群聊共享，群记忆只在所属群可见。建议先启用 `autoRecall`，确认 `plugin.qq-memory.remember` 与 `plugin.qq-memory.recall` 的授权，再让她记住稳定事实。
+
+自主时间默认停用。启用后可分别打开日记、学习、群黑话和空间活动；主动联系仍由她根据真实上下文判断，并受安静时段、每日上限和最短间隔限制。主动联系不应通过打开 `freeMode` 来绕过这些节奏限制。
+
+### 5. 备份、安全与升级
+
+- 备份 `data/dsh-onebot-bridge/memory/memory.db`，它包含长期记忆；也可按需备份自主时间目录。
+- 不要把 token、密码、`data` 目录、`admin.json` 或运行日志密钥提交到 GitHub。
+- 升级前停止 DSH，备份数据后拉取代码并重新安装依赖：
+
+```powershell
+cd F:\大肥鱼\plugins\dsh-onebot-bridge
+git pull --ff-only
+npm install
+cd F:\大肥鱼
+.\restart.cmd
+```
+
+- 如果 DSH 没有自动重启，请用管理员 PowerShell 运行 `F:\大肥鱼\start.cmd` 或 `F:\大肥鱼\restart.cmd`。
+
+### 6. 常见故障
+
+- **页面打不开**：确认 DSH、夜航控制台和 NapCat 进程已启动；先访问 `http://127.0.0.1:3097`，再检查 OneBot WebSocket 地址。
+- **显示在线但收不到消息**：检查 NapCat WebUI 中 OneBot 11 的事件端口、反向/正向 WebSocket 模式和 Token 是否与插件设置一致。
+- **主动消息太频繁**：检查“自主时间”的主动联系最短间隔、每日上限和安静时段；`freeMode` 只影响自主活动业务配额。
+- **记忆没有回忆**：确认长期记忆已启用、当前聊天在作用范围内、`autoRecall` 已打开；没有嵌入密钥时可先使用 `keyword` 或 `off` 模式。
+- **启动脚本报错**：先停止旧的 DSH/NapCat 进程，再以管理员运行 `F:\大肥鱼\start.cmd`，并查看宿主 `logs` 目录中的错误信息。不要把包含 token 的日志上传到 issue。
+
+### 7. 本地验证
+
+在插件目录运行：
+
+```powershell
+npm test
+npm run check:manifests
+node scripts/check-deployment.mjs
+```
+
+真实 QQ 写操作仍需按 `docs/REAL_ACCEPTANCE.md` 逐项验收；单元测试和模拟网关通过不等于真实账号已经验收。
+
 > UI 与插件治理后的开发规范：仓库根目录 `docs/ARCHITECTURE.md`、`DEVELOPMENT.md`、`CODING_STANDARDS.md`、`PLUGIN_SYSTEM.md`、`PLUGIN_DEVELOPMENT.md`、`UI_GUIDELINES.md`、`API_CONVENTIONS.md`、`SECURITY.md`、`MIGRATION.md`。UI 改动前必须先读 `UI_GUIDELINES.md`。
 
 ## 夜航控制台
@@ -95,6 +178,8 @@ DeepSeek Harness 0.2.1-rc.2 的原生 QQ 插件框架。入口：账号菜单 �
 
 WS 支持 echo、心跳和账号绑定；反向支持 Universal 或分开的 API/Event 角色。ok 表示确认，async 表示受理，超时/断线可能结果未知。写操作不会因超时自动重发。
 
+执行结果现在带 `state`：`submitted`（网关已提交）/`accepted`（下游受理）/`confirmed`（按能力契约拿到证据）/`unknown`（证据不足，不得自动重试）。原有 `outcome` 保留兼容；哪些能力只到 `submitted`、哪些必须回读，见 `docs/API_CONVENTIONS.md` 第 7 节。
+
 ## 插件开发
 
 市场支持 **API 2 声明式包**，只含 manifest.json 和 rules.json。规则可匹配固定命令、关键词、通知，动作可提供固定模板结果；不执行脚本、任意正则、Shell 或原始网关调用。
@@ -116,6 +201,8 @@ Token 使用 DSH 凭据服务 DSH_ONEBOT_ACCESS_TOKEN，不写入插件市场包
 ## 验证与范围
 
 npm test：核心回归与本机模拟网关。framework-ui-smoke.cjs、framework-ui-actions.cjs、framework-integration.cjs 依赖本机 Playwright/Edge，用于 UI 与真实 DSH 模型联调。集成脚本切换到本机模拟网关，结束恢复配置；不要在用户聊天期间随意运行。
+
+真实 QQ 验收单独管理：清单与逐项步骤见 `docs/REAL_ACCEPTANCE.md`，记录工具为 `node scripts/acceptance.mjs init|list|record|report`。清单、交付报告与验收脚本均随插件发布包分发。`real-pass` 必须带账号与证据，模拟结果不会被记成真实验收；未完成清单前不得宣称真实环境通过。
 
 没有安装或执行参考项目 Derpyu520/qq-bridge，也没有复用其源码、签名实现或提示词；旧 dsh-qqbot 仍保持卸载。
 
@@ -185,7 +272,7 @@ npm test：核心回归与本机模拟网关。framework-ui-smoke.cjs、framewor
 - **本地语音（默认）**：调用 Windows 内置语音（默认 `Microsoft Huihui Desktop`），生成 24 kHz 单声道 WAV，再用 ffmpeg 转 64 kbps MP3。离线、不需要密钥；本机需安装 ffmpeg（可用 `ffmpegPath` 指定完整路径）。
 - **硅基流动**：向 OpenAI 兼容的 `POST /v1/audio/speech` 发请求，默认模型 `FunAudioLLM/CosyVoice2-0.5B`、音色 `FunAudioLLM/CosyVoice2-0.5B:alex`。密钥填在设置页，或留空读取环境变量 `SILICONFLOW_API_KEY`（`custom` 读取 `TTS_API_KEY`）。
 - **自建网络语音**：`custom` 可指向任意兼容 `/v1/audio/speech` 的服务（例如本机 GPT-SoVITS、CosyVoice、Kokoro），地址允许 `http://127.0.0.1:…`。
-- **限制与记录**：单条字数、同一聊天冷却、本地最长秒数可设；合成或发送失败会报出原因，设置页“最近记录”保留最近 20 条成功/失败与耗时。
+- **限制与记录**：单条字数、同一聊天冷却、本地最长秒数可设；合成或发送失败会报出原因，设置页“最近记录”保留最近 20 条成功/失败与耗时。本地合成依次尝试 SAPI 文件流、SAPI 内存流与 `System.Speech`，失败时保留 `voice.wav.debug` / `voice.wav.json`，并把引擎、HRESULT 和可用音色带进错误信息。
 - **权限**：动作标记为 mutating，不能作为“所有用户”的安全查询共享；包启用、动作授权、作用范围是三个独立步骤，仍需在“主人与权限”里启用 `plugin.qq-tts.speak` 与 `qq.audio.send`。
 
 启用步骤：插件管理 → 发语音（TTS）→ 选择作用范围并启用 → 主人与权限里启用上述两个动作 → 直接说“用语音说一句……”。语音以 MP3 经 `base64://` 传给 NapCat，实际播放取决于网关的语音转换能力（`can_send_record`），需要在真实账号下验收。网络语音会把朗读文字发到配置的服务，密钥保存在本机状态文件里，不要连同 `data` 目录一起分发。

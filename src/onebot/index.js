@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
+import {faceText} from './faces.js';
 const unescapeCQ=s=>String(s).replace(/&#44;/g,',').replace(/&#91;/g,'[').replace(/&#93;/g,']').replace(/&amp;/g,'&');
 const id=value=>/^[1-9]\d{3,15}$/.test(String(value||''))?String(value):'';
 export function segments(message) {
@@ -18,7 +19,7 @@ export function normalize(raw){
  const bot=id(raw.self_id),user=id(raw.user_id),kind=raw.message_type,peer=id(kind==='group'?raw.group_id:raw.user_id);
  if(!bot||!user||!peer||bot===user||raw.message_id==null)return null;
  const parts=segments(raw.message??raw.raw_message),names={image:'[图片]',record:'[语音]',video:'[视频]',file:'[文件]',forward:'[合并转发]',face:'[QQ 表情]'};
- const text=parts.map(p=>p.type==='text'?String(p.data.text||''):names[p.type]||'').join('').trim().slice(0,60000);
+ const text=parts.map(p=>p.type==='text'?String(p.data.text||''):p.type==='face'?faceText(p.data.id):names[p.type]||'').join('').trim().slice(0,60000);
  return {type:'message',bot,user,kind,peer,key:bot+':'+kind+':'+peer,id:String(raw.message_id),subtype:String(raw.sub_type||''),
   time:Number(raw.time)||Date.now()/1000,text,mentions:parts.filter(p=>p.type==='at').map(p=>String(p.data.qq)),
   reply:parts.find(p=>p.type==='reply')?.data.id,sender:String(raw.sender?.card||raw.sender?.nickname||user).slice(0,80),parts};

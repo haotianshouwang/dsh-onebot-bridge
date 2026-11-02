@@ -1,6 +1,6 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
+import test from 'node:test';import assert from 'node:assert/strict';import {access,mkdtemp,rm,writeFile} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
 import {Store} from '../src/host/store.js';import {Permissions} from '../src/core/permissions.js';import {Actions} from '../src/core/actions.js';import {Events} from '../src/core/events.js';import {Media} from '../src/core/media.js';import {PluginSDK} from '../src/sdk.js';
-import {activateTTS,defaultConfig,manifest,speechPayload,isAudio,synthesizeVoice} from '../src/builtins/tts/index.js';
+import {activateTTS,defaultConfig,manifest,speechPayload,isAudio,synthesizeVoice,synthesizeLocal,LOCAL_SCRIPT} from '../src/builtins/tts/index.js';
 import {migrateConfig} from '../src/core/package-model.js';
 
 const bot='10000002',owner='10000001',other='12345678',group='88888',key=bot+':group:'+group;
@@ -8,7 +8,7 @@ const msg=(extra={})=>({bot,user:owner,kind:'group',peer:group,key,id:'m1',...ex
 // 最小可识别的 MP3 头（ID3 + 一帧同步），足够通过核心的资源类型校验。
 const mp3=Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x64AAAAAAAA','latin1');
 
-async function setup(t,{synthesize,sendOutcome='confirmed'}={}){
+async function setup(t,{synthesize,sendOutcome='confirmed',sendState='submitted'}={}){
  process.env.QQBOT_OWNER=owner;
  const dir=await mkdtemp(path.join(os.tmpdir(),'qq-tts-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -21,7 +21,7 @@ async function setup(t,{synthesize,sendOutcome='confirmed'}={}){
  actions.invoke=async(id,args,c,signal)=>{
   if(id.startsWith('plugin.qq-tts.'))return originalInvoke(id,args,c,signal);
   invokes.push({id,args});
-  if(id==='qq.audio.send')return {outcome:sendOutcome};
+  if(id==='qq.audio.send')return {outcome:sendOutcome,state:sendOutcome==='unknown'?'unknown':sendState,verified:sendState==='confirmed'};
   throw new Error('unexpected invoke '+id);
  };
  const sdk=new PluginSDK({store,permissions,events,media,actions});
@@ -57,10 +57,12 @@ test('语音包默认停用，普通用户没有动作权限',async t=>{
 test('speak 合成后作为语音资源发送到当前聊天',async t=>{
  const x=await setup(t);x.enable();
  const result=await x.actions.invoke('plugin.qq-tts.speak',{text:'  你好呀，我是大肥鱼。  '},x.context());
- assert.equal(result.ok,true);
+ assert.equal(result.ok,false);
+ assert.equal(result.state,'submitted');
+ assert.equal(result.submitted,true);
  assert.equal(result.chars,10);
  assert.equal(result.seconds,1.2);
- assert.match(result.instruction,/不要重复/);
+ assert.match(result.instruction,/已提交|不要自动重发/);
  assert.equal(x.synthCalls[0].text,'你好呀，我是大肥鱼。');
  assert.equal(x.invokes.length,1);
  assert.equal(x.invokes[0].id,'qq.audio.send');
@@ -70,7 +72,8 @@ test('speak 合成后作为语音资源发送到当前聊天',async t=>{
  assert.equal(resource.key,key);
  const recent=x.store.data.framework.pluginData['qq-tts'].recent;
  assert.equal(recent.length,1);
- assert.equal(recent[0].ok,true);
+ assert.equal(recent[0].ok,false);
+ assert.equal(recent[0].state,'submitted');
  assert.equal(recent[0].chars,10);
 });
 
@@ -122,7 +125,7 @@ test('设置页数据返回统计与最近记录',async t=>{
  assert.equal(page.stats[0].label,'今日语音');
  assert.equal(page.stats[0].value,1);
  assert.equal(page.rows.length,1);
- assert.equal(page.rows[0].result,'已发送');
+ assert.equal(page.rows[0].result,'已提交，未确认送达');
  assert.ok(page.columns.some(c=>c.key==='time'&&c.format==='datetime'));
 });
 
@@ -155,4 +158,53 @@ test('isAudio 只接受已知音频容器',()=>{
  assert.ok(isAudio(Buffer.from('RIFF\x00\x00\x00\x00WAVEfmt ','latin1')));
  assert.ok(!isAudio(Buffer.from('{"error":"x"}','latin1')));
  assert.ok(!isAudio(Buffer.from('PNG','latin1')));
+});
+
+test('本地语音脚本按文件流、内存流、System.Speech 依次回退并写诊断',()=>{
+ assert.match(LOCAL_SCRIPT,/SAPI\.SpFileStream/);
+ assert.match(LOCAL_SCRIPT,/SAPI\.SpMemoryStream/);
+ assert.match(LOCAL_SCRIPT,/System\.Speech/);
+ assert.match(LOCAL_SCRIPT,/voice-probe failed/);
+ assert.match(LOCAL_SCRIPT,/ConvertTo-Json/);
+ assert.match(LOCAL_SCRIPT,/GetData\(\)/);
+});
+
+test('本地合成失败时把引擎、HRESULT 和音色诊断带进错误',async()=>{
+ const run=async(_command,args)=>{
+  const index=args.indexOf('-OutFile'),wav=args[index+1],dir=path.dirname(wav);
+  await writeFile(path.join(dir,'voice.wav.debug'),'start\nsapi-file failed: 0x80045040\nsapi-memory failed: 0x80045040\ndotnet failed: 0x80045040\n','utf8');
+  await writeFile(path.join(dir,'voice.wav.json'),JSON.stringify({engine:'',hresult:'0x80045040',voices:['Microsoft Huihui Desktop','Microsoft Zira Desktop'],is64:true,ps:'5.1'}),'utf8');
+  await writeFile(path.join(dir,'error.txt'),'本机语音引擎没有生成音频 0x80045040','utf8');
+ };
+ await assert.rejects(synthesizeLocal('你好',{...defaultConfig(),localVoice:'Microsoft Huihui Desktop'},{run,keepOnFailure:false}),error=>{
+  assert.match(error.message,/0x80045040/);
+  assert.match(error.message,/sapi-file|诊断目录/);
+  assert.match(error.message,/voices=2/);
+  return true;
+ });
+});
+
+test('ffmpeg 失败也保留脱敏诊断，并删除正文、脚本和音频',async t=>{
+ let calls=0;
+ const run=async(_command,args)=>{
+  calls+=1;
+  const index=args.indexOf('-OutFile'),wav=args[index+1],dir=path.dirname(wav);
+  if(calls===1){
+   const bytes=Buffer.alloc(144);bytes.write('RIFF',0,'ascii');bytes.write('WAVE',8,'ascii');
+   await writeFile(wav,bytes);
+   await writeFile(path.join(dir,'voice.wav.debug'),'sapi-file bytes=144\n','utf8');
+   await writeFile(path.join(dir,'voice.wav.json'),JSON.stringify({engine:'sapi-file',bytes:144,hresult:'',voices:['Huihui']}),'utf8');
+   return {stderr:''};
+  }
+  throw new Error('ffmpeg 转码失败');
+ };
+ let kept='';
+ await assert.rejects(synthesizeLocal('敏感朗读正文',{...defaultConfig()},{run}),error=>{
+  const match=error.message.match(/诊断目录已保留：(qq-tts-[^；\s]+)/);
+  assert.ok(match,error.message);kept=match[1];assert.match(error.message,/ffmpeg/);return true;
+ });
+ const dir=path.join(os.tmpdir(),kept);t.after(()=>rm(dir,{recursive:true,force:true}));
+ await access(path.join(dir,'voice.wav.debug'));
+ await access(path.join(dir,'voice.wav.json'));
+ for(const name of ['text.txt','speak.ps1','voice.wav','voice.mp3'])await assert.rejects(access(path.join(dir,name)));
 });

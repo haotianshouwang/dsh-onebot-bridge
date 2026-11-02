@@ -37,7 +37,9 @@
   },
   "dependencies": {
     "fflate": "^0.8.2",
+    "playwright-core": "^1.55.0",
     "pdfjs-dist": "6.4.299",
+    "three": "^0.181.2",
     "ws": "^8.18.3"
   },
   "peerDependencies": {
@@ -56,6 +58,8 @@
   "files": [
     "src",
     "examples",
+    "docs",
+    "scripts/acceptance.mjs",
     "scripts/build-market.mjs",
     "cordis.patch.yml",
     "README.md",

@@ -5,6 +5,8 @@
 // - 收藏来源只能是"当前聊天已收到的消息"（由核心 qq.media.receive 校验归属）。
 // - 识别用途靠把图片本身回传给模型（工具结果里带图片块），模型看图判断，不做臆测。
 // - 联网查含义复用 qq-web 的搜索动作；没装或没授权时明确说明，不编造含义。
+import {stateOf} from '../../core/result.js';
+
 export const manifest = {
   id: 'qq-sticker', name: '表情包', version: '1.1.0', bundled: true,
   apiVersion: 2, type: 'native-source', entry: 'src/builtins/sticker/index.js',
@@ -21,6 +23,11 @@ export const manifest = {
     maxPerMessage: {type: 'number', title: '单条消息最多收几张', description: '一条消息里有多张图片时，最多处理前几张。', default: 3, min: 1, max: 10, integer: true},
     excludeKeywords: {type: 'string[]', title: '排除关键词', description: '消息正文包含这些词时不自动收藏，每行一个。', default: [], maxItems: 20},
     meaningEnabled: {type: 'boolean', title: '允许联网查表情含义', default: true},
+    autoClassify: {type: 'boolean', title: '自动识图分类', description: '收藏后用当前视觉模型标注情绪与用途；不支持看图时保留原图待手动分类。', default: true},
+    autoSend: {type: 'boolean', title: '聊天时自主配表情', description: '按语境选择图片、QQ 小表情或消息贴表情回应中的一种；看图回复不原样回贴图片。无需群友获得工具权限。', default: false},
+    expressionMode: {type: 'string', title: '自主表情类型', enum: ['image','mixed'], default: 'image', description: 'image 只用已确认的图片表情；mixed 才允许混用 QQ 小表情和消息贴表情。所有配图独立发送。'},
+    sendProbability: {type: 'number', title: '自主配图机会（%）', default: 25, min: 0, max: 100, integer: true},
+    sendCooldownSec: {type: 'number', title: '自主配图间隔（秒）', default: 60, min: 0, max: 3600, integer: true},
     maxStickers: {type: 'number', title: '表情库上限（张）', default: 300, min: 10, max: 1000, integer: true}
   },
   settings: {
@@ -29,7 +36,8 @@ export const manifest = {
     sections: [
       {title: '检索与容量', fields: ['listLimit', 'maxStickers']},
       {title: '自动收藏', fields: ['autoSaveSent', 'autoSaveIncoming', 'collectProbability', 'collectCooldownSec', 'maxPerMessage', 'excludeKeywords']},
-      {title: '联网查含义', fields: ['meaningEnabled']}
+      {title: '联网查含义', fields: ['meaningEnabled']},
+      {title: '理解与表达', fields: ['autoClassify', 'autoSend', 'expressionMode', 'sendProbability', 'sendCooldownSec']}
     ]
   }
 };
@@ -42,7 +50,7 @@ const REQUIRED = {
   save: [], steal: [], list: [], send: ['id'], explain: [], remove: ['id']
 };
 
-export function activateSticker(framework, {stickers, readResource} = {}) {
+export function activateSticker(framework, {stickers, readResource, reactMessage} = {}) {
   const api = framework.registerTrustedPackage(manifest);
 
   const remember = async (a, c, signal, source) => {
@@ -64,7 +72,7 @@ export function activateSticker(framework, {stickers, readResource} = {}) {
     return {
       ok: true, deduped, sticker: publicRow(sticker),
       previews: [{mediaType: sticker.mime, base64: Buffer.from(previewBytes).toString('base64'), name: sticker.name}],
-      instruction: '先看这张图，再调用 annotate 补上 emotion（' + EMOTIONS.join('、') + ' 之一）、标签和用途；判断依据只能是图里实际看到的内容。'
+      instruction: '先看这张图，再调用 annotate 明确 isSticker（普通照片/截图设 false，真正聊天表情设 true），并补 emotion（' + EMOTIONS.join('、') + ' 之一）、标签和用途；未确认前不进入可发送图库。'
         + (deduped ? '这张表情已经在库里，这次只补充了标签与用途。' : '已收藏。')
     };
   };
@@ -106,10 +114,11 @@ export function activateSticker(framework, {stickers, readResource} = {}) {
       emotion: {type: 'string', maxLength: 12, description: EMOTIONS.join('/')},
       tags: {type: 'array', maxItems: 5, items: {type: 'string', maxLength: 20}},
       usage: {type: 'string', maxLength: 120}
+      ,isSticker: {type: 'boolean', description: '是否真正的聊天表情；普通照片、界面/文档截图必须 false'}
     }, ['id'])
   }, async a => {
     if (a.emotion && !EMOTIONS.includes(a.emotion)) api.reject('情绪只能是：' + EMOTIONS.join('、'));
-    const row = await stickers.annotate(a.id, {name: a.name, emotion: a.emotion, tags: a.tags, usage: a.usage});
+    const row = await stickers.annotate(a.id, {name: a.name, emotion: a.emotion, tags: a.tags, usage: a.usage, isSticker:a.isSticker});
     return {ok: true, sticker: publicRow(row), instruction: '已补好分类。以后按情绪或标签就能找到它。'};
   });
 
@@ -119,28 +128,46 @@ export function activateSticker(framework, {stickers, readResource} = {}) {
     parameters: schema({query: {type: 'string', maxLength: 40}, tag: {type: 'string', maxLength: 20}, emotion: {type: 'string', maxLength: 12}, limit: {type: 'integer', minimum: 1, maximum: 20}}, REQUIRED.list)
   }, async a => {
     const limit = a.limit ?? api.getConfig().listLimit ?? 8;
-    const rows = a.query ? stickers.find(a.query) : stickers.list({tag: a.tag, emotion: a.emotion, limit});
+    const rows = (a.query ? stickers.find(a.query) : stickers.list({tag: a.tag, emotion: a.emotion, limit, classification:'verified'})).filter(row=>row.isSticker===true);
     const stats = stickers.stats(api.getConfig().maxStickers);
     return {
-      ok: true, total: stats.count, capacity: stats.max,
+      ok: true, total: stickers.count({classification:'verified'}), capacity: stats.max,
       items: rows.slice(0, limit).map(publicRow),
       instruction: rows.length ? '用编号引用表情；要看具体长什么样可用 explain。' : '库里没有匹配的表情。'
     };
   });
 
   api.action('send', {
-    description: '仅主人或已授权用户：把表情库里某个编号的表情发到当前聊天。编号必须来自 list 或 explain 的结果。',
+    description: '仅主人或已授权用户：发图库表情（id 来自 list），或发 QQ 小表情（id="face:13" 呲牙、"face:14" 微笑），或给消息贴表情回应（id="reaction:13"，可传 messageId，默认当前消息）。',
     mutating: true, timeoutMs: 25000,
-    parameters: schema({id: {type: 'string', maxLength: 60}}, REQUIRED.send)
+    parameters: schema({id: {type: 'string', maxLength: 60}, messageId: {type:'string', maxLength:60, description:'贴表情的目标消息，必须属于当前聊天，默认本轮消息'}}, REQUIRED.send)
   }, async (a, c, signal) => {
+    const native = /^(face|reaction):(\d{1,10})$/.exec(a.id);
+    if (native) {
+      let result;
+      if (native[1] === 'reaction') {
+        if (!reactMessage) api.reject('当前宿主没有消息贴表情服务');
+        result = await reactMessage(a.messageId || c.messageId, native[2], c, signal);
+      } else {
+        if (native[2].length > 4) api.reject('QQ 表情编号无效');
+        result = await api.invoke('qq.message.send', {segments:[{type:'face',data:{id:native[2]}}]}, c, signal);
+      }
+      return {...result, kind:native[1], emojiId:native[2], instruction:'按返回的 state 判断表情操作是否确认，不要重复发送或重复贴表情，不要声称已经核实对方客户端展示。'};
+    }
     const {row, bytes} = await stickers.read(a.id);
+    if(row.isSticker!==true)api.reject(row.isSticker===false?'这张是普通图片，不作为表情包发送':'这张图片尚未确认是表情包，请先识图分类');
     const resource = await api.putResource(bytes, c, {purpose: 'image', name: row.name});
     const sent = await api.invoke('qq.image.send', {resourceId: resource.id}, c, signal);
-    const outcome = sent?.outcome || 'unknown', confirmed = outcome === 'confirmed', accepted = outcome === 'accepted';
-    if (confirmed) await stickers.touch(row.id);
+    const outcome = sent?.outcome || 'unknown';
+    const state = stateOf(sent), confirmed = state === 'confirmed', accepted = state === 'accepted', submitted = state === 'submitted';
+    if (confirmed || accepted || submitted) await stickers.touch(row.id);
     return {
-      ok: confirmed, outcome, accepted, id: row.id, name: row.name, emotion: row.emotion || '', tags: row.tags,
-      instruction: confirmed ? '已经发出去了，不要再重复发送同一个表情。' : accepted ? '网关已受理图片，但尚未确认送达；不要声称已经确认收到。' : '图片发送结果未确认，不要声称已经发出。'
+      ...sent, ok: confirmed, outcome, state, verified: confirmed, accepted, submitted,
+      id: row.id, name: row.name, emotion: row.emotion || '', tags: row.tags,
+      instruction: confirmed ? '表情已经验证发送完成，不要重复发送。'
+        : submitted ? '表情已提交给网关，但尚未确认对端收到；不要声称已经送达，也不要自动重发。'
+          : accepted ? '网关已受理图片，但尚未确认送达；不要声称已经确认收到，也不要自动重发。'
+            : '图片发送结果未确认；不要声称已经发出，也不要自动重发。'
     };
   });
 

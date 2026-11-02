@@ -80,6 +80,17 @@ test('记忆按用户和群隔离，私聊看不到别的群记忆',async t=>{
  assert.ok(!visible.includes('别人喜欢猫'));
 });
 
+test('主人明确形成的用户事实可在其他聊天自动共享，仍不共享别人的用户记忆', async t => {
+ const {memory}=await setup(t,{rawStore:true});
+ memory.insert({scope:'user',owner,text:'主人喜欢猫'});
+ memory.insert({scope:'user',owner,kind:'event',text:'主人私聊中的临时经历'});
+ memory.insert({scope:'user',owner:other,text:'另一个人的偏好'});
+ const visible=memory.visible({actor:'55555555',group,sharedOwner:owner}).map(row=>row.text);
+ assert.ok(visible.includes('主人喜欢猫'));
+ assert.ok(!visible.includes('主人私聊中的临时经历'));
+ assert.ok(!visible.includes('另一个人的偏好'));
+});
+
 test('remember 默认写用户记忆、支持语义去重并限制越权范围',async t=>{
  const x=await setup(t,{grants:[{id:'g1',capability:'plugin.qq-memory.remember',allUsers:false,users:[other],groups:[group],private:false,deny:false,expires:'',perMinute:10}]}),c=x.context();
  const first=await x.call('remember',{text:'我不吃香菜'},c);

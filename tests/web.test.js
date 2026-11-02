@@ -51,9 +51,11 @@ test('image search returns opaque current-chat candidates and image-send validat
  await assert.rejects(x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c),/尚未向当前用户开放/);
  for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
  const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
- assert.equal(sent.ok,true);
+ assert.equal(sent.ok,false);
+ assert.equal(sent.state,'submitted');
+ assert.equal(sent.submitted,true);
  assert.equal(sent.sourceUrl,undefined);
- assert.match(sent.instruction,/不要输出图片网址/);
+ assert.match(sent.instruction,/已提交|不要自动重发/);
  assert.equal(downloads.length,2);
  assert.equal(downloads[0].url,'https://cdn.example.com/animal.png?size=large');
  assert.equal(downloads[1].url,'https://cdn.example.com/animal.png?size=large');
@@ -94,22 +96,34 @@ test('DNS private answers and redirect-to-private are blocked before connection'
 test('public redirects retain final URL and DNS is pinned; files and oversized pages are rejected',async()=>{const seen=[],p=await readPublic('https://example.com',{resolve:resolver,request:transport([{status:302,headers:{location:'/final'}},{body:'page'}],seen)});assert.equal(p.url,'https://example.com/final');let address;seen[0].opts.lookup('example.com',{},(_e,a)=>address=a);assert.equal(address,'93.184.216.34');await assert.rejects(readPublic('https://example.com',{resolve:resolver,request:transport([{headers:{'content-type':'application/octet-stream'}}])}),/文件/);await assert.rejects(readPublic('https://example.com',{resolve:resolver,maxBytes:4,request:transport([{body:'12345'}])}),/大小/);});
 
 test('room hourly and per-user minute limits are separate from owner privileges',async t=>{const x=await setup(t,async url=>({url,body:rss,contentType:'text/xml'}));x.item.config.userPerMinute=2;const c=x.permissions.issue(message(),'chat');for(let i=0;i<2;i++)await x.actions.invoke('plugin.qq-web.search',{query:'test'},c);await assert.rejects(x.actions.invoke('plugin.qq-web.search',{query:'test'},c),/用户.*上限/);x.item.config.perHour=2;const owner=x.permissions.issue(message({user:'10000001',id:'2'}),'chat');await assert.rejects(x.actions.invoke('plugin.qq-web.search',{query:'test'},owner),/小时上限/);});
-test('联网发图成功后把资源交给自动收藏，且不因收藏失败影响发送',async t=>{
+test('联网发图提交后把资源交给自动收藏，且不因收藏失败影响发送状态',async t=>{
  const seen=[];
  const x=await setupImages(t,async url=>({url,contentType:'text/html',body:imageHtml}),async()=>png,{onStickerSent:async(id,ctx,meta)=>{seen.push({id,name:meta.name});}});
  const c=x.permissions.issue(message(),'chat'),search=await x.actions.invoke('plugin.qq-web.image-search',{query:'鲸鱼'},c);
  for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
  const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
- assert.equal(sent.ok,true);
+ assert.equal(sent.ok,false);
+ assert.equal(sent.state,'submitted');
  assert.equal(typeof sent.resourceId,'string','发图结果应带 resourceId 供表情包收藏');
  assert.equal(seen.length,1,'发图成功应触发一次自动收藏');
  assert.match(seen[0].name,/鲸鱼/);
 });
 
-test('自动收藏抛错时发送仍然成功',async t=>{
+test('自动收藏抛错时仍保留真实发送状态',async t=>{
  const x=await setupImages(t,async url=>({url,contentType:'text/html',body:imageHtml}),async()=>png,{onStickerSent:async()=>{throw new Error('表情库满');}});
  const c=x.permissions.issue(message(),'chat'),search=await x.actions.invoke('plugin.qq-web.image-search',{query:'鲸鱼'},c);
  for(const capability of ['plugin.qq-web.image-send','qq.image.send'])x.store.data.framework.grants.push({capability,allUsers:false,users:[other],groups:[group],private:false,deny:false,perMinute:5});
  const sent=await x.actions.invoke('plugin.qq-web.image-send',{imageId:search.results[0].imageId},c);
- assert.equal(sent.ok,true);
+ assert.equal(sent.ok,false);
+ assert.equal(sent.state,'submitted');
+});
+
+test('自由模式取消联网业务配额，但停用和范围校验仍生效', async t => {
+ const x=await setup(t,async url=>({url,body:rss}));
+ x.store.data.framework.nativePackages['qq-autonomy']={manifest:{id:'qq-autonomy',version:'1.0.0',dependencies:{}},enabled:true,config:{enabled:true,freeMode:true}};
+ x.item.config.userPerMinute=2;x.item.config.perMinute=2;
+ const c=x.permissions.issue(message(),'chat');
+ for(let i=0;i<40;i++)assert.equal((await x.actions.invoke('plugin.qq-web.search',{query:'天文'},c)).ok,true);
+ x.item.enabled=false;
+ await assert.rejects(x.actions.invoke('plugin.qq-web.search',{query:'天文'},c),/停用/);
 });

@@ -1,4 +1,7 @@
 import {safeDownload} from './media.js';
+import {classifyError,normalizeResult,stateOf} from './result.js';
+import {failureOf} from './errors.js';
+import {contractFor,contractInfo,wireContract} from './contracts.js';
 import {publicText,qqPlain,replyLimits} from '../session/output.js';
 import {registerExtended} from '../onebot/extended.js';
 const str=(description,maxLength=200)=>({type:'string',description,maxLength});
@@ -22,7 +25,7 @@ function parse(args,s){
 const textMessage=data=>(Array.isArray(data?.message)?data.message:[]).map(p=>p.type==='text'?{type:'text',data:{text:String(p.data?.text||'').slice(0,12000)}}:p.type==='at'?{type:'at',data:{qq:String(p.data?.qq||'')}}:p.type==='reply'?{type:'reply',data:{id:String(p.data?.id||'')}}:{type:String(p.type),data:{}}).slice(0,100);
 export class Actions {
  constructor(store,permissions,events,media){
-  this.store=store;this.permissions=permissions;this.events=events;this.media=media;this.definitions=new Map();this.sent=new Map();this.executions=new WeakMap();this.outputUsage=new Map();this.deliveries=new WeakSet();
+  this.store=store;this.permissions=permissions;this.events=events;this.media=media;this.definitions=new Map();this.sent=new Map();this.executions=new WeakMap();this.outputUsage=new Map();this.deliveries=new WeakSet();this.mediaTurns=new Set();this.outbound=new Map();
   this.add('core.status','查看机器人运行状态',empty,async()=>({connection:this.bot?.status?.state,online:this.bot?.status?.online,paused:store.data.framework.paused,packages:Object.entries(store.data.framework.builtins).filter(([,v])=>v.enabled).map(([id])=>id)}));
   this.add('qq.login','查看机器人账号',empty,()=>this.query('get_login_info'));
   this.add('qq.capabilities','查看 QQ 网关能力',empty,async()=>this.capabilities());
@@ -62,6 +65,7 @@ export class Actions {
   this.add('qq.message.send','向当前聊天发送文字或图片消息链',schema({segments:{type:'array',description:'每段必须为 {type,data}。真实@示例：{type:"at",data:{qq:"12345678"}}；文字示例：{type:"text",data:{text:"你好"}}。禁止用普通文字@代替at段。',maxItems:20,items:{type:'object',required:['type','data'],additionalProperties:false,properties:{type:{type:'string',enum:['text','image','at','reply','face']},data:{type:'object',description:'按type填写：text:{text}、image:{resourceId}、at:{qq}、reply:{id}、face:{id}',additionalProperties:true}}}}}),async(a,c)=>{
    const message=await this.message(a.segments,c);return this.send(c,message);
   },{mutating:true});
+  this.add('qq.message.react','给当前聊天真实收到的某条消息贴 QQ 表情回应；不另外发送图片。普通 QQ 表情示例：13 呲牙、14 微笑。',schema({messageId:str('当前聊天已收到的消息 ID',60),emojiId:str('QQ 表情或 Unicode 十进制编号',10)}),async(a,c,signal)=>this.reactMessage(a.messageId,a.emojiId,c,signal),{mutating:true,extension:true});
   for(const [id,type,segment]of [['qq.image.send','image','image'],['qq.audio.send','audio','record'],['qq.video.send','video','video']]){
    this.add(id,'向当前聊天发送'+({image:'图片',audio:'语音',video:'视频'}[type]),schema({resourceId:str('当前聊天的资源 ID',60)}),async(a,c)=>{
     const {file}=await media.resolve(a.resourceId,c,type,c.plugin);
@@ -95,7 +99,7 @@ export class Actions {
    try{
     const result=await this.request(row.name==='friend'?'set_friend_add_request':'set_group_add_request',{
      flag:row.flag,approve:a.approve,...row.name==='friend'?{remark:a.reason}:{sub_type:row.subtype,reason:a.reason}
-    },c);row.state=result.outcome==='confirmed'?'handled':'accepted';return result;
+    },c);row.state=stateOf(result)==='confirmed'?'handled':'accepted';return result;
    }catch(e){row.state=e.code==='FAILED'?'pending':'unknown';throw e;}
   },{ownerOnly:true,mutating:true});
   this.add('qq.history.get','查看当前聊天近期历史',schema({count:{type:'integer',minimum:1,maximum:20}}),async(a,c)=>{
@@ -109,21 +113,34 @@ export class Actions {
   if(this.tasks)return;
   this.tasks=tasks;
   const object=(properties,required=Object.keys(properties))=>({type:'object',properties,required,additionalProperties:false});
-  this.add('qq.task.create','创建一条持久化任务，记录目标、完成条件和计划。仅主人可用；创建不等于执行。',object({
+  this.add('qq.task.create','创建持久化任务。主人要求稍后联系/定时提醒时必须设置 delaySeconds 或 remindAt，才会自动到点向当前聊天发提醒；普通任务创建不等于执行。',object({
    goal:str('任务目标',500),reason:str('创建原因',300),completion:str('完成条件',300),
+   delaySeconds:{type:'integer',minimum:1,maximum:31622400,description:'多少秒后提醒，与 remindAt 二选一'},
+   remindAt:str('提醒时间 ISO 8601，必须含时区，例如 2026-11-01T20:00:00+08:00；与 delaySeconds 二选一',50),
+   reminderText:str('到点发送的提醒正文，不填写则主动打招呼',500),
    plan:{type:'array',maxItems:20,items:{type:'string',maxLength:300}},
    maxSteps:{type:'integer',minimum:1,maximum:50},
    budgetMs:{type:'integer',minimum:0,maximum:86400000},
    verificationMethod:{type:'string',enum:['manual','steps','tool','readback','memory']},
    verificationCapability:str('验证动作能力',100),
    verificationOutcome:str('期望工具结果',100),
+   verificationState:{type:'string',enum:['','submitted','accepted','confirmed'],description:'期望工具结果状态；优先于文字匹配'},
    verificationPath:str('回读字段路径',100),
    verificationEquals:str('回读期望值',300),
    verificationArgs:str('回读参数 JSON',500),
    verificationMemoryId:str('验证记忆 ID',100),
    verificationMinConfidence:{type:'number',minimum:0,maximum:1},
    idempotencyKey:str('幂等键',200)
-  },['goal']),async a=>tasks.create({...a,verificationSpec:{capability:a.verificationCapability,outcome:a.verificationOutcome,path:a.verificationPath,equals:a.verificationEquals,args:a.verificationArgs,memoryId:a.verificationMemoryId,minConfidence:a.verificationMinConfidence}}),{ownerOnly:true,mutating:true});
+  },['goal']),async (a,c)=>{
+   let reminder=null;
+   if(a.delaySeconds!==undefined || a.remindAt!==undefined || a.reminderText!==undefined){
+    if((a.delaySeconds!==undefined)===(a.remindAt!==undefined))throw Error('提醒须指定 delaySeconds 或 remindAt 其中一个');
+    if(a.remindAt && !/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)$/.test(a.remindAt))throw Error('提醒时间必须包含日期、时间和时区');
+    const dueAt=a.delaySeconds!==undefined?tasks.now()+a.delaySeconds*1000:Date.parse(a.remindAt);
+    reminder={bot:c.bot,actor:c.actor,kind:c.kind,peer:c.peer,key:c.key,sourceMessageId:c.messageId,dueAt,text:a.reminderText?.trim()||'时间到了，我来找你啦。'};
+   }
+   return tasks.create({...a,...reminder?{reminder,idempotencyKey:'reminder:'+c.key+':'+c.messageId}:{},verificationSpec:{capability:a.verificationCapability,outcome:a.verificationOutcome,state:a.verificationState,path:a.verificationPath,equals:a.verificationEquals,args:a.verificationArgs,memoryId:a.verificationMemoryId,minConfidence:a.verificationMinConfidence}});
+  },{ownerOnly:true,mutating:true});
   this.add('qq.task.list','列出持久化任务及真实状态；不会把计划当成已完成。',object({
    status:{type:'string',enum:['','pending','analyzing','planning','waiting_approval','executing','verifying','done','failed','cancelled']},
    limit:{type:'integer',minimum:1,maximum:100}
@@ -137,10 +154,14 @@ export class Actions {
   this.add('qq.task.transition','按状态机推进任务；非法跳转会被拒绝。',object({
    id:str('任务 ID',100),status:{type:'string',enum:['analyzing','planning','waiting_approval','executing','verifying','done','failed','cancelled']},note:str('状态说明',160)
   },['id','status']),async a=>{
+   if(tasks.get(a.id)?.reminder&&a.status!=='cancelled')throw Error('定时提醒由调度器自动推进；手动只支持取消');
    const task=await tasks.transition(a.id,a.status,a.note);
    if(a.status==='done'&&typeof this.onTaskEvent==='function')try{await this.onTaskEvent({reason:'task',title:task.goal,summary:task.verification?.note||task.completion||''});}catch{}
    return {task};
   },{ownerOnly:true,mutating:true});
+  this.add('qq.task.recover','明确确认未知步骤的重复执行风险，并把失败任务送回 planning。只有主人明确确认后可用。',object({
+   id:str('任务 ID',100),confirmed:{type:'boolean'},note:str('人工确认说明',160)
+  },['id','confirmed']),async a=>({task:await tasks.recover(a.id,a)}),{ownerOnly:true,mutating:true});
   this.add('qq.task.step','给执行中的任务追加一个真实步骤结果。',object({
    id:str('任务 ID',100),title:str('步骤',200),tool:str('工具',100),status:{type:'string',enum:['pending','running','done','failed','skipped']},outcome:str('结果摘要',200),note:str('备注',200),operationKey:str('幂等操作键',160)
   },['id','title']),async a=>({step:await tasks.addStep(a.id,a)}),{ownerOnly:true,mutating:true});
@@ -157,22 +178,24 @@ export class Actions {
   const item={id,description,parameters,run,...options};item.publicSafe=!item.ownerOnly&&!item.mutating&&(options.publicSafe===true||publicQueries.has(id));item.riskLevel=item.ownerOnly&&item.mutating?'C':item.ownerOnly||item.mutating?'B':'A';item.available=()=>this.definitions.get(id)===item&&(!options.available||options.available());this.definitions.set(id,item);return()=>this.definitions.delete(id);
  }
  attach(bot){this.bot=bot;}
- catalog(){return [...this.definitions.values()].map(({run,available,...item})=>({...item,enabled:this.store.data.framework.enabledActions.includes(item.id)}));}
+ catalog(){return [...this.definitions.values()].map(({run,available,...item})=>({...item,enabled:this.store.data.framework.enabledActions.includes(item.id),contract:contractInfo(item.id)}));}
  capabilities(){return {protocol:'OneBot 11',gateway:this.bot?.status.version||{},features:this.bot?.status.features||{},napcat:this.isNapCat(),actions:this.catalog().map(x=>({id:x.id,support:x.extension?(this.isNapCat()?'gateway-declared':'unsupported'):'protocol',verified:'not-probed',enabled:x.enabled}))};}
  isNapCat(){return /napcat/i.test(String(this.bot?.status?.version?.app_name||''));}
  requireNapCat(){if(!this.isNapCat())throw new Error('当前网关未声明支持 NapCat 扩展');}
  checkBot(c){if(this.bot?.status?.bot!==c.bot)throw new Error('机器人账号已变更');}
  async invoke(id,args,c,signal){
+  const started=Date.now();
   const cap=this.definitions.get(id);this.permissions.assert(cap,c,true);
   const parsed=parse(args,cap.parameters);this.checkBot(c);if(signal?.aborted)throw new Error('操作已取消');
-  this.permissions.audit('started',id,c,'',cap.riskLevel);
+  this.permissions.audit('started',id,c,'',cap.riskLevel,'authorized');
   if(this.executions.has(c))throw new Error('同一执行上下文不能并发调用动作');
   this.executions.set(c,{cap,signal});
   try{
-   const result=await cap.run(parsed,c,signal);
+   // 统一结果协议：保留原有字段（含 outcome），新增 state/verified/evidence。
+   const result=normalizeResult(await cap.run(parsed,c,signal),{capability:id,contract:contractFor(id)});
    this.permissions.assert(cap,c);this.checkBot(c);if(signal?.aborted)throw new Error('操作已取消');
-   this.permissions.audit('completed',id,c,'',cap.riskLevel);return result??null;
-  }catch(e){this.permissions.audit(e.code==='UNKNOWN_OUTCOME'?'unknown':'failed',id,c,e.message,cap.riskLevel);throw e;}
+   this.permissions.audit('completed',id,c,'',cap.riskLevel,result.state,{durationMs:Date.now()-started});return result;
+  }catch(e){const failure=failureOf(e);this.permissions.audit(e.code==='UNKNOWN_OUTCOME'?'unknown':'failed',id,c,failure.message,cap.riskLevel,classifyError(e),{errorClass:failure.errorClass,durationMs:Date.now()-started});throw e;}
   finally{this.executions.delete(c);await this.store.persist();}
  }
  outputKey(c){return [c.boot,c.generation,c.key,c.actor,c.messageId].join('|');}
@@ -188,16 +211,69 @@ export class Actions {
    for(const p of message)if(p.type==='text'){const raw=qqPlain(publicText(p.data.text,{secrets:[this.bot?.token]}),{legacyBreaks:!execution}),points=Array.from(raw);if(points.length&&!available)throw Error('本轮发送字数已用完');p.data.text=points.length<=available?raw:points.slice(0,Math.max(0,available-1)).join('')+'…';available-=Array.from(p.data.text).length;sentText+=p.data.text;}
    params={...params,message};const key=this.outputKey(c),used=this.outputUsage.get(key)||{chars:0,parts:0};this.outputUsage.set(key,{chars:used.chars+left.chars-available,parts:used.parts+1});if(this.outputUsage.size>2000)this.outputUsage.delete(this.outputUsage.keys().next().value);
   }
-  const result=await this.bot.request(action,params,15000,signal);
+  let raw;
+  try {
+   raw = await this.bot.request(action,params,15000,signal);
+  } catch (error) {
+   if (['send_group_msg','send_private_msg'].includes(action)) {
+    this.recordOutbound(c,params,{state:classifyError(error)},sentText);
+   }
+   throw error;
+  }
+  if (['send_group_msg', 'send_private_msg'].includes(action) && raw.outcome === 'confirmed' && raw.data?.message_id != null) {
+   // 只回读，不重发。确认的是自己的发送记录，不能据此宣称对方已读。
+   try {
+    const row = await this.bot.call('get_msg', {message_id: raw.data.message_id}, 5000, signal);
+    const author = String(row?.user_id || row?.sender?.user_id || '');
+    const target = c.kind === 'group' ? row?.group_id : row?.target_id || row?.peer_id;
+    if (String(row?.message_id) === String(raw.data.message_id) && author === c.bot && String(target) === c.peer) {
+     raw = {...raw, messageStored: true, note: '已发送，并已核实自己的消息记录；这不代表对方已读。'};
+    } else {
+     raw = {...raw, note: '网关已返回消息编号，发送请求成功；暂未回读到自己的消息记录，不代表发送失败，不要重复发送。不要声称对方已读。'};
+    }
+   } catch {
+    raw = {...raw, note: '网关已返回消息编号，发送请求成功；消息回读暂不可用，不要重复发送。不要声称对方已读。'};
+   }
+  }
+  const result=normalizeResult(raw,{contract:wireContract(action)});
+  if (['send_group_msg','send_private_msg'].includes(action)) {
+    this.recordOutbound(c,params,result,sentText);
+  }
   if(['send_group_msg','send_private_msg'].includes(action)&&['confirmed','accepted'].includes(result.outcome))this.deliveries.add(c);
+  if(['send_group_msg','send_private_msg'].includes(action)&&['submitted','accepted','confirmed','unknown'].includes(result.state)&&params.message?.some(part=>['image','record','video','file'].includes(part.type))){
+   this.mediaTurns.add(this.outputKey(c));
+   if(this.mediaTurns.size>2000)this.mediaTurns.delete(this.mediaTurns.values().next().value);
+  }
   if(result.outcome==='confirmed'&&['send_group_msg','send_private_msg'].includes(action)){this.remember(c,result.data?.message_id);this.onSent?.(c,result.data?.message_id,sentText||'[媒体消息]');}
   return result;
+ }
+ recordOutbound(c,params,result,text) {
+  const key=this.outputKey(c),rows=this.outbound.get(key)||[];
+  rows.push({state:result.state,messageId:result.data?.message_id==null?null:String(result.data.message_id),text,types:(params.message||[]).map(part=>part.type)});
+  this.outbound.set(key,rows.slice(-8));
+  if(this.outbound.size>2000)this.outbound.delete(this.outbound.keys().next().value);
+ }
+ sentMessages(c) { return structuredClone(this.outbound.get(this.outputKey(c)) || []); }
+ unsentText(c, text) {
+  const normalize = value => String(value || '').replace(/\s+/g, '').trim();
+  const sent = this.sentMessages(c).filter(row => ['submitted','accepted','confirmed','unknown'].includes(row.state) && row.text).map(row => normalize(row.text));
+  const value = String(text || '').trim();
+  if (sent.some(previous => previous.includes(normalize(value)))) return '';
+  return value.split(/\n\s*\n/).filter(part => !sent.includes(normalize(part))).join('\n\n');
  }
  query(action,params={}){return this.bot.call(action,params);}
  groupTarget(id,c){id=id||(c.kind==='group'?c.peer:'');if(!this.store.data.framework.listenGroups.includes(id)||c.kind==='group'&&c.peer!==id)throw new Error('目标群超出当前授权范围');return id;}
  messageId(id){if(!/^-?\d{1,20}$/.test(id))throw new Error('消息 ID 无效');const n=Number(id);if(!Number.isSafeInteger(n))throw new Error('消息 ID 超出范围');return n;}
  verifyMessage(data,c){if(data?.message_type&&data.message_type!==c.kind||c.kind==='group'&&String(data?.group_id)!==c.peer||c.kind==='private'&&String(data?.user_id??data?.sender?.user_id)!==c.peer)throw new Error('消息不属于当前聊天');}
  hasSent(c){return this.deliveries.has(c);}
+ hasMediaSent(c){return this.mediaTurns.has(this.outputKey(c));}
+ async reactMessage(messageId,emojiId,c,signal){
+  const invalid=this.permissions.valid(c);if(invalid)throw new Error(invalid);
+  this.requireNapCat();
+  if(!this.events.hasMessage(c,String(messageId)))throw new Error('只能给当前聊天最近收到的消息贴表情');
+  if(!/^\d{1,10}$/.test(String(emojiId)))throw new Error('表情 ID 无效');
+  return this.request('set_msg_emoji_like',{message_id:this.messageId(String(messageId)),emoji_id:String(emojiId)},c,signal);
+ }
  async message(parts,c){
   if(!parts.length||parts.length>20)throw new Error('消息段数量无效');const result=[];
   for(const p of parts){

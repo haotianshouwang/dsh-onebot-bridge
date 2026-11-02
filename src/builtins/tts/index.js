@@ -11,6 +11,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import {stateOf} from '../../core/result.js';
 
 export const manifest = {
   id: 'qq-tts', name: '发语音（TTS）', version: '1.0.1', bundled: true,
@@ -52,7 +53,12 @@ export const manifest = {
 };
 
 const MAX_AUDIO = 8 * 1024 * 1024;
-const LOCAL_SCRIPT = `param(
+// 本机语音：三条路径依次尝试，并写出 .debug/.json 诊断文件。
+// 1) SAPI SpFileStream 直接写 WAV（不依赖 GetData 的 COM 封送）
+// 2) SAPI SpMemoryStream（显式 22kHz/16bit/mono），由 Node 侧补 WAV 头
+// 3) .NET System.Speech SetOutputToWaveFile
+// 宿主进程曾出现只生成 WAV 头/0 字节；失败时保留诊断，不再只报“没有生成音频”。
+export const LOCAL_SCRIPT = `param(
   [Parameter(Mandatory=$true)][string]$TextPath,
   [Parameter(Mandatory=$true)][string]$OutFile,
   [Parameter(Mandatory=$true)][string]$ErrorFile,
@@ -62,43 +68,110 @@ const LOCAL_SCRIPT = `param(
 )
 $ErrorActionPreference = 'Stop'
 $debug = $OutFile + '.debug'
-$stream = $null
+$diag = $OutFile + '.json'
+$info = [ordered]@{ engine = ''; bytes = 0; hresult = ''; error = ''; voices = @(); is64 = [Environment]::Is64BitProcess; ps = $PSVersionTable.PSVersion.ToString(); at = (Get-Date).ToString('o') }
+function Log($message) { Add-Content -Path $debug -Value $message -Encoding UTF8 }
+function SelectVoice($voice) {
+  if (-not $VoiceName) { return }
+  $voices = $voice.GetVoices()
+  for ($i = 0; $i -lt $voices.Count; $i++) {
+    $description = $voices.Item($i).GetDescription()
+    if ($description -eq $VoiceName -or $description -like ($VoiceName + ' -*')) { $voice.Voice = $voices.Item($i); return }
+  }
+  throw ('未安装音色 ' + $VoiceName)
+}
 try {
-  Add-Content -Path $debug -Value 'start' -Encoding UTF8
+  Log 'start'
   $text = [System.IO.File]::ReadAllText($TextPath, [System.Text.Encoding]::UTF8)
   if ([string]::IsNullOrWhiteSpace($text)) { throw '语音文本为空' }
-  $voice = New-Object -ComObject SAPI.SpVoice
-  if ($VoiceName) {
-    $voices = $voice.GetVoices()
-    $selected = $null
-    for ($i = 0; $i -lt $voices.Count; $i++) {
-      $description = $voices.Item($i).GetDescription()
-      if ($description -eq $VoiceName -or $description -like ($VoiceName + ' -*')) { $selected = $voices.Item($i); break }
-    }
-    if (-not $selected) {
-      $names = @()
-      for ($i = 0; $i -lt $voices.Count; $i++) { $names += $voices.Item($i).GetDescription() }
-      throw ('未安装音色「' + $VoiceName + '」，可用音色：' + ($names -join '、'))
-    }
-    $voice.Voice = $selected
-    Add-Content -Path $debug -Value 'voice-selected' -Encoding UTF8
+  try {
+    $probe = New-Object -ComObject SAPI.SpVoice
+    $all = $probe.GetVoices()
+    for ($i = 0; $i -lt $all.Count; $i++) { $info.voices += $all.Item($i).GetDescription() }
+  } catch {
+    $info.hresult = '0x' + ('{0:X8}' -f $_.Exception.HResult)
+    Log ('voice-probe failed: ' + $_.Exception.Message + ' ' + $info.hresult)
   }
-  $voice.Rate = $Rate
-  $voice.Volume = $Volume
-  $stream = New-Object -ComObject SAPI.SpMemoryStream
-  $voice.AudioOutputStream = $stream
-  Add-Content -Path $debug -Value 'output-set' -Encoding UTF8
-  $voice.Speak($text)
-  $bytes = $stream.GetData()
-  [System.IO.File]::WriteAllBytes($OutFile, $bytes)
-  Add-Content -Path $debug -Value ('spoken; bytes=' + $bytes.Length) -Encoding UTF8
+
+  if (-not $info.engine) {
+    try {
+      $voice = New-Object -ComObject SAPI.SpVoice
+      SelectVoice $voice
+      $voice.Rate = $Rate
+      $voice.Volume = $Volume
+      $stream = New-Object -ComObject SAPI.SpFileStream
+      $stream.Open($OutFile, 3, $false)
+      $voice.AudioOutputStream = $stream
+      $voice.Speak($text, 0)
+      $stream.Close()
+      $size = 0
+      if (Test-Path $OutFile) { $size = (Get-Item $OutFile).Length }
+      Log ('sapi-file bytes=' + $size)
+      if ($size -ge 100) { $info.engine = 'sapi-file'; $info.bytes = $size }
+    } catch {
+      $info.hresult = '0x' + ('{0:X8}' -f $_.Exception.HResult)
+      Log ('sapi-file failed: ' + $_.Exception.Message + ' ' + $info.hresult)
+    }
+  }
+
+  if (-not $info.engine) {
+    try {
+      $voice = New-Object -ComObject SAPI.SpVoice
+      SelectVoice $voice
+      $voice.Rate = $Rate
+      $voice.Volume = $Volume
+      $memory = New-Object -ComObject SAPI.SpMemoryStream
+      $memory.Format.Type = 22
+      $voice.AudioOutputStream = $memory
+      $voice.Speak($text, 0)
+      $bytes = $memory.GetData()
+      $length = 0
+      if ($null -ne $bytes) { $length = $bytes.Length }
+      Log ('sapi-memory bytes=' + $length)
+      if ($length -ge 100) {
+        [System.IO.File]::WriteAllBytes($OutFile, $bytes)
+        $info.engine = 'sapi-memory'
+        $info.bytes = $length
+      }
+      $memory.Close()
+    } catch {
+      $info.hresult = '0x' + ('{0:X8}' -f $_.Exception.HResult)
+      Log ('sapi-memory failed: ' + $_.Exception.Message + ' ' + $info.hresult)
+    }
+  }
+
+  if (-not $info.engine) {
+    try {
+      Add-Type -AssemblyName System.Speech
+      $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+      if ($VoiceName) { $synth.SelectVoice($VoiceName) }
+      $synth.Rate = $Rate
+      $synth.Volume = $Volume
+      $synth.SetOutputToWaveFile($OutFile)
+      $synth.Speak($text)
+      $synth.SetOutputToNull()
+      $synth.Dispose()
+      $size = 0
+      if (Test-Path $OutFile) { $size = (Get-Item $OutFile).Length }
+      Log ('dotnet bytes=' + $size)
+      if ($size -ge 100) { $info.engine = 'dotnet'; $info.bytes = $size }
+    } catch {
+      $info.hresult = '0x' + ('{0:X8}' -f $_.Exception.HResult)
+      Log ('dotnet failed: ' + $_.Exception.Message + ' ' + $info.hresult)
+    }
+  }
+
+  if (-not $info.engine) { throw ('本机语音引擎没有生成音频（' + $info.hresult + '）') }
 } catch {
-  Add-Content -Path $debug -Value ('error: ' + $_.Exception.Message) -Encoding UTF8
-  try { [System.IO.File]::WriteAllText($ErrorFile, $_.Exception.Message, (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  $info.error = $_.Exception.Message
+  $info.hresult = '0x' + ('{0:X8}' -f $_.Exception.HResult)
+  Log ('error: ' + $info.error + ' ' + $info.hresult)
+  try { [System.IO.File]::WriteAllText($ErrorFile, ($info.error + ' ' + $info.hresult), (New-Object System.Text.UTF8Encoding($false))) } catch {}
+  try { ($info | ConvertTo-Json -Depth 4) | Set-Content -Path $diag -Encoding UTF8 } catch {}
   exit 1
-} finally {
-  if ($stream) { try { $stream.Close() } catch {} }
-}`;
+}
+try { ($info | ConvertTo-Json -Depth 4) | Set-Content -Path $diag -Encoding UTF8 } catch {}
+Log ('done engine=' + $info.engine + ' bytes=' + $info.bytes)`;
 
 const PROVIDER_LABEL = { local: '本机 Windows 语音', siliconflow: '硅基流动', custom: '自建网络语音' };
 
@@ -167,10 +240,37 @@ function wrapPcmAsWav(pcm, sampleRate = 22050, channels = 1, bits = 16) {
   return Buffer.concat([header, pcm]);
 }
 
-export async function synthesizeLocal(text, config, { signal, voice, run = runProcess } = {}) {
+export async function synthesizeLocal(text, config, { signal, voice, run = runProcess, keepOnFailure = true } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'qq-tts-'));
   const textFile = path.join(dir, 'text.txt'), wavFile = path.join(dir, 'voice.wav'),
-    mp3File = path.join(dir, 'voice.mp3'), errorFile = path.join(dir, 'error.txt'), scriptFile = path.join(dir, 'speak.ps1');
+    mp3File = path.join(dir, 'voice.mp3'), errorFile = path.join(dir, 'error.txt'),
+    scriptFile = path.join(dir, 'speak.ps1'), debugFile = wavFile + '.debug', diagFile = wavFile + '.json';
+  let keep = false;
+  // 失败时把脚本诊断（引擎、HRESULT、音色列表）带进错误信息，并保留临时目录供排查。
+  const diagnostics = async () => {
+    const [detail, debug, raw] = await Promise.all([
+      readFile(errorFile, 'utf8').catch(() => ''),
+      readFile(debugFile, 'utf8').catch(() => ''),
+      readFile(diagFile, 'utf8').catch(() => '')
+    ]);
+    let diag = null;
+    try { diag = JSON.parse(String(raw).replace(/^\uFEFF/, '')); } catch { /* 忽略 */ }
+    const lines = String(debug).trim().split(/\r?\n/).filter(Boolean).slice(-6).join(' | ');
+    const engine = diag ? ('engine=' + (diag.engine || '-') + ' hresult=' + (diag.hresult || '-') + ' voices=' + ((diag.voices || []).length)) : '';
+    return {
+      text: [String(detail).trim(), lines, engine].filter(Boolean).join('；').slice(0, 400),
+      kept: path.basename(dir)
+    };
+  };
+  // 保留诊断时清掉朗读正文、脚本和音频，避免失败排查目录长期留存用户内容。
+  const scrub = async () => {
+    await Promise.all([
+      rm(textFile, {force: true}),
+      rm(scriptFile, {force: true}),
+      rm(wavFile, {force: true}),
+      rm(mp3File, {force: true})
+    ]).catch(() => {});
+  };
   try {
     await writeFile(textFile, text, { encoding: 'utf8', mode: 0o600 });
     // Windows PowerShell 5.1 只有看到 BOM 才按 UTF-8 读取脚本，避免中文错误提示乱码。
@@ -178,7 +278,7 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
     const selected = String(voice || config.localVoice || '').trim();
     const rate = Number.isInteger(config.localRate) ? config.localRate : 0;
     const volume = Number.isInteger(config.localVolume) ? config.localVolume : 100;
-    const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
+    const args = ['-NoProfile', '-NonInteractive', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
       '-TextPath', textFile, '-OutFile', wavFile, '-ErrorFile', errorFile, '-Rate', String(rate), '-Volume', String(volume)];
     if (selected) args.push('-VoiceName', selected);
     let runResult;
@@ -186,9 +286,9 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
       runResult = await run(String(config.powershellPath || 'powershell.exe'), args, { timeoutMs: 12000, signal, label: '本地语音合成' });
     } catch (error) {
       if (signal?.aborted || error.code === 'PLUGIN_CANCELLED') throw error;
-      // PowerShell 5.1 的中文错误经 stderr 会乱码；脚本另外写了 UTF-8 错误文件。
-      const detail = await readFile(errorFile, 'utf8').catch(() => '');
-      throw detail.trim() ? new Error(detail.trim().slice(0, 220)) : error;
+      // PowerShell 5.1 的中文错误经 stderr 会乱码；脚本另外写了 UTF-8 错误文件和诊断 JSON。
+      const detail = await diagnostics();
+      throw new Error((detail.text || error.message).slice(0, 400));
     }
     let wav = null;
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -197,9 +297,11 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
       if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 120));
     }
     if (!wav || wav.size < 100) {
-      const detail = await readFile(errorFile, 'utf8').catch(() => '');
+      const detail = await diagnostics();
       const size = wav?.size ?? 0;
-      throw new Error(String(detail).trim().slice(0, 220) || String(runResult?.stderr || '').trim().slice(0, 220) || ('本地语音没有生成音频数据（WAV ' + size + ' 字节）；宿主进程可能需要桌面/音频会话，真实 QQ TTS 未完成'));
+      throw new Error(('本地语音没有生成音频数据（WAV ' + size + ' 字节）' +
+        (detail.text ? '：' + detail.text : String(runResult?.stderr || '').trim().slice(0, 220)) +
+        '；诊断目录已保留：' + detail.kept).slice(0, 400));
     }
     let wavBytes = await readFile(wavFile);
     if (wavBytes.subarray(0, 4).toString('ascii') !== 'RIFF') {
@@ -218,8 +320,16 @@ export async function synthesizeLocal(text, config, { signal, voice, run = runPr
     if (bytes.length > MAX_AUDIO) throw new Error('语音文件超过 8 MB，请缩短文字');
     if (!isAudio(bytes)) throw new Error('ffmpeg 生成的文件不是可识别的音频');
     return { bytes, provider: 'local', voice: selected || '系统默认', seconds };
+  } catch (error) {
+    if (signal?.aborted || error.code === 'PLUGIN_CANCELLED') throw error;
+    const detail = await diagnostics();
+    keep = keepOnFailure;
+    if (keep) await scrub();
+    const message = [String(error?.message || error), detail.text, keep ? '诊断目录已保留：' + detail.kept : ''].filter(Boolean).join('；').slice(0, 400);
+    throw new Error(message);
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    // 成功或取消时清理；普通失败只保留不含正文/音频的 .debug/.json/error.txt。
+    if (!keep) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -293,13 +403,16 @@ async function remember(api, context, entry, log) {
       const now = Date.now();
       const cooldowns = data.cooldowns && typeof data.cooldowns === 'object' ? data.cooldowns : {};
       for (const key of Object.keys(cooldowns)) if (!(now - Number(cooldowns[key]) < 3600000)) delete cooldowns[key];
-      if (entry.ok) cooldowns[context.key] = now;
+      if (entry.ok || entry.sent === true) cooldowns[context.key] = now;
       const chatKeys = Object.keys(cooldowns);
       if (chatKeys.length > 200) {
         chatKeys.sort((a, b) => Number(cooldowns[a]) - Number(cooldowns[b]));
         for (const key of chatKeys.slice(0, chatKeys.length - 200)) delete cooldowns[key];
       }
-      const row = { t: now, provider: entry.provider, voice: entry.voice, chars: entry.chars, ms: entry.ms, ok: entry.ok === true };
+      const row = {
+        t: now, provider: entry.provider, voice: entry.voice, chars: entry.chars, ms: entry.ms,
+        ok: entry.ok === true, state: String(entry.state || '')
+      };
       if (entry.outcome) row.outcome = String(entry.outcome).slice(0, 20);
       if (!entry.ok) row.error = String(entry.error || '').slice(0, 160);
       recent.unshift(row);
@@ -331,7 +444,7 @@ export function activateTTS(framework, { synthesize = synthesizeVoice, log } = {
     const stored = api.storage.get();
     const last = Number(stored.cooldowns?.[context.key] || 0);
     const wait = Math.ceil(((Number(config.cooldownSec) || 0) * 1000 - (Date.now() - last)) / 1000);
-    if (last && wait > 0) api.reject('语音冷却中，请 ' + wait + ' 秒后再发');
+    if (api.businessLimitsEnabled?.() !== false && last && wait > 0) api.reject('语音冷却中，请 ' + wait + ' 秒后再发');
 
     const started = Date.now(), chars = pointLength(text);
     let result;
@@ -352,13 +465,23 @@ export function activateTTS(framework, { synthesize = synthesizeVoice, log } = {
       throw new Error('语音已合成，但发送失败：' + String(error.message || error).slice(0, 180));
     }
     const outcome = sent?.outcome || 'unknown';
-    const confirmed = outcome === 'confirmed';
-    const accepted = outcome === 'accepted';
-    await remember(api, context, { ok: confirmed, outcome, provider: result.provider, voice: result.voice, chars, ms: Date.now() - started, ...(confirmed ? {} : { error: '发送结果：' + outcome }) }, log);
+    const state = stateOf(sent);
+    const confirmed = state === 'confirmed';
+    const accepted = state === 'accepted';
+    const submitted = state === 'submitted';
+    const dispatched = confirmed || accepted || submitted;
+    await remember(api, context, {
+      ok: confirmed, sent: dispatched, outcome, state, provider: result.provider, voice: result.voice,
+      chars, ms: Date.now() - started, ...(confirmed ? {} : { error: '发送状态：' + state })
+    }, log);
     return {
-      ok: confirmed, outcome, accepted, provider: PROVIDER_LABEL[result.provider] || result.provider, voice: result.voice,
+      ...sent, ok: confirmed, outcome, state, verified: confirmed, accepted, submitted,
+      provider: PROVIDER_LABEL[result.provider] || result.provider, voice: result.voice,
       chars, seconds: result.seconds ?? null,
-      instruction: confirmed ? '语音已经发出，不要重复发送同一段。' : accepted ? '网关已受理语音，但尚未确认送达；不要声称已经确认收到。' : '语音发送结果未确认，不要声称已经发出。'
+      instruction: confirmed ? '语音已发送并核实自己的消息记录；不代表对方已读。不要重复发送，也不必追加状态说明。'
+        : submitted ? '网关已返回语音消息编号，发送请求成功；不要声称对方已读，不要自动重发，也不必追加“你收到了吗”等状态说明。'
+          : accepted ? '网关已受理语音，但尚未确认送达；不要声称已经确认收到，也不要自动重发。'
+            : '语音发送结果未确认；不要声称已经发出，也不要自动重发。'
     };
   });
 
@@ -367,7 +490,7 @@ export function activateTTS(framework, { synthesize = synthesizeVoice, log } = {
     const recent = Array.isArray(stored.recent) ? stored.recent : [];
     const start = new Date(); start.setHours(0, 0, 0, 0);
     const today = recent.filter(row => Number(row.t) >= start.getTime());
-    const failed = recent.filter(row => row.ok !== true);
+    const failed = recent.filter(row => row.ok !== true && !['submitted', 'accepted'].includes(row.state));
     const offset = Number(query?.offset || 0);
     return {
       stats: [
@@ -379,7 +502,9 @@ export function activateTTS(framework, { synthesize = synthesizeVoice, log } = {
       rows: recent.slice(offset, offset + 30).map(row => ({
         time: new Date(row.t).toISOString(), provider: PROVIDER_LABEL[row.provider] || row.provider,
         voice: row.voice || '—', chars: row.chars,
-        result: row.ok ? '已发送' : '失败：' + String(row.error || '未知原因'),
+        result: row.state === 'submitted' ? '已提交，未确认送达'
+          : row.state === 'accepted' ? '已受理，未确认送达'
+            : row.ok ? '已验证发送' : '失败：' + String(row.error || '未知原因'),
         ms: row.ms
       })),
       total: recent.length, offset, hasMore: offset + 30 < recent.length

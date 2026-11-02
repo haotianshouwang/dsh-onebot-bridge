@@ -452,7 +452,7 @@ window.__ModuleLoader__.load({
         (data.eventState?.requests||[]).length?(data.eventState.requests.map(r=>h('div',{key:r.requestId,className:'qqb-reason'},
           h('div',null,(r.name==='friend'?'好友请求':'加群请求')+' · '+r.user),h('small',null,r.comment||r.peer),h('small',null,({pending:'待处理',handled:'已处理',accepted:'网关已受理',unknown:'结果未知',submitting:'正在处理'}[r.state]||r.state)),
           r.state==='pending'&&h('div',{className:'qqb-row'},[true,false].map(approve=>button(approve?'同意':'拒绝',async()=>{
-            try{const result=await api('invokeAction',{revision:data.revision,key:data.status.bot+':private:'+data.framework.ownerQQ,capability:'qq.request.decide',arguments:{requestId:r.requestId,approve,reason:''}});notify(result.outcome==='confirmed'?'请求已处理':'网关已受理，请等待确认');}catch(e){notify(e.message,true);}
+            try{const result=await api('invokeAction',{revision:data.revision,key:data.status.bot+':private:'+data.framework.ownerQQ,capability:'qq.request.decide',arguments:{requestId:r.requestId,approve,reason:''}});notify(result.state==='confirmed'?'请求已验证处理':'请求已提交网关，请等待实际结果');}catch(e){notify(e.message,true);}
           },{key:String(approve),disabled:busy||!data.framework.enabledActions.includes('qq.request.decide')})))))):h('p',{className:'qqb-empty'},'没有待处理的请求。')) );
   }
   function PermissionsPage({data,act,busy,notify}){

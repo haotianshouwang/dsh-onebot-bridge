@@ -14,6 +14,9 @@ data/
 .env.*
 secrets.json
 
+# 真实验收记录（含测试账号与截图路径）
+acceptance-runs/
+
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db

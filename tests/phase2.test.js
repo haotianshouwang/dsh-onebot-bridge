@@ -114,7 +114,7 @@ test('welcome requires separate event automation permission, deduplicates and ne
  const duplicate=notice({user:'10000001',time:Math.floor(Date.now()/1000)+1});p.automationGrants=['welcome'];await x.events.receive(duplicate);
  assert.equal(x.sent.length,1);assert.equal(x.sent[0].params.group_id,88888);assert.match(x.sent[0].params.message[0].data.text,/10000001/);
  await x.events.receive(duplicate);assert.equal(x.sent.length,1);
- assert.equal(x.store.data.framework.automaticOutbox[0].authority,'configured-event-rule');assert.equal(x.store.data.framework.automaticOutbox[0].status,'confirmed');
+ assert.equal(x.store.data.framework.automaticOutbox[0].authority,'configured-event-rule');assert.equal(x.store.data.framework.automaticOutbox[0].status,'submitted');
 });
 test('queued automatic reply is cancelled when the package is disabled before dispatch',async t=>{
  const x=await setup(t),pack=activateGroupMembers(x.sdk.facade()),p=enable(x,pack);p.config.welcomeEnabled=true;p.automationGrants=['welcome'];

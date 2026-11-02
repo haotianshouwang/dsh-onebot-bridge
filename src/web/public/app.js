@@ -1,4 +1,4 @@
-/* QQ 框架独立管理控制台：原生 ES 模块，无第三方依赖。 */
+/* QQ 框架独立管理控制台：原生 ES 模块；Three.js 通过本地静态模块提供星图渲染。 */
 import {createStarMap} from './star-map.js';
 
 const state = {
@@ -354,14 +354,17 @@ async function fetchJson(url, body) {
 async function secureApi(action, payload = {}) {
   const body = {action, revision: state.data?.revision, ...payload};
   if (action === 'secretAdmin') body.vaultSession = state.vaultSession;
-  const response = await fetch('/api/action', {
+  const read = action === 'qzoneAdmin' && ['overview', 'friends', 'feed'].includes(payload.op);
+  const signal = AbortSignal.timeout(read ? 20000 : 180000);
+  let response;
+  try { response = await fetch('/api/action', {
     method: 'POST',
     headers: {'content-type': 'application/json', 'x-csrf-token': state.csrf || ''},
-    body: JSON.stringify(body)
-  });
+    body: JSON.stringify(body), signal
+  }); } catch (error) { throw new Error(signal.aborted ? '请求超时，请稍后重试' : '无法连接本机服务，请确认服务正在运行'); }
   let json;
-  try { json = await response.json(); } catch { json = { ok: false, error: '服务返回了无法解析的内容' }; }
-  if (response.status === 401) { state.data = null; state.csrf = null; renderAuth('login', '会话已过期，请重新登录'); throw new Error('请重新登录'); }
+  try { json = await response.json(); } catch { json = { ok: false, error: signal.aborted ? '请求超时，请稍后重试' : '服务返回了无法解析的内容' }; }
+  if (response.status === 401) { state.data = null; state.csrf = null; state.ui = {}; pageCache.clear(); closeModal(); state.starMap?.destroy(); state.starMap = null; renderAuth('login', '会话已过期，请重新登录'); throw new Error('请重新登录'); }
   if (!response.ok || json.ok === false) throw new Error(json.error || ('HTTP ' + response.status));
   return json.value;
 }
@@ -393,14 +396,17 @@ async function loadPage(key, work, {force = false} = {}) {
   const current = pageCache.get(key);
   if (current?.loading) return;
   if (!force && current?.data && !current.error) return;
-  pageCache.set(key, {...(current || {}), loading: true, error: null});
+  const pending = {...(current || {}), loading: true, error: null};
+  pageCache.set(key, pending);
   if (state.view === key) render();
   try {
     const data = await work();
+    if (pageCache.get(key) !== pending) return;
     pageCache.set(key, {data, loading: false, error: null, at: Date.now()});
   } catch (error) {
+    if (pageCache.get(key) !== pending) return;
     if (error.message === '请重新登录') return;
-    pageCache.set(key, {...(current || {}), loading: false, error: formatError(error), data: current?.data || null});
+    pageCache.set(key, {...(current || {}), loading: false, error: formatError(error), data: current?.data || null, at: Date.now()});
     toast(formatError(error), true);
   }
   if (state.view === key) render();
@@ -962,8 +968,25 @@ function scopeEditor(scope) {
   return { node, read };
 }
 
+async function showEmotionStatus() {
+  try {
+    const data = await secureApi('pluginPageData', {id: 'qq-emotion'});
+    const labels = {pending: '待分享', queued: '等待主动联系', submitted: '已提交', accepted: '已受理', confirmed: '已验证', unknown: '结果未知', cancelled: '已取消', skipped: '本次未分享', failed: '失败'};
+    const rows = data.rows || [];
+    const content = el('div', {},
+      grid((data.stats || []).map(item => stat(item.label, item.value)), 2),
+      el('p', {class: 'section-note'}, '心情来自真实聊天观察并随时间缓和。下面是实际分享事件与发送状态；已提交不代表主人已读。'),
+      rows.length ? el('div', {class: 'table-wrap'}, el('table', {class: 'table'},
+        el('thead', {}, el('tr', {}, ['时间', '来源', '见闻', '状态'].map(title => el('th', {}, title)))),
+        el('tbody', {}, rows.map(row => el('tr', {}, el('td', {}, timeText(row.at)), el('td', {}, row.chat), el('td', {}, row.summary), el('td', {}, labels[row.state] || row.state))))))
+        : el('p', {class: 'empty'}, '尚无分享事件。启用插件并选择观察群后，她会根据新对话决定是否分享。'));
+    openModal('情绪与见闻', '读取插件持久化记录', content, [button('关闭', closeModal, {ghost: true})]);
+  } catch (error) { if (error.message !== '请重新登录') toast(formatError(error), true); }
+}
+
 function pluginCard(item, kind) {
   const manifest = item.manifest || {};
+  const id = item.id || manifest.id;
   const name = manifest.name || item.name || item.id;
   const version = manifest.version || item.version || '1.0.0';
   const description = manifest.description || item.description || '';
@@ -972,21 +995,22 @@ function pluginCard(item, kind) {
   const scope = scopeEditor(item.scope);
   const config = configForm(manifest, item.config || {});
   const save = () => {
-    if (kind === 'builtin') return act('configureBuiltin', { id: item.id, enabled, config: item.config || {} }, '内置包已保存');
+    if (kind === 'builtin') return act('configureBuiltin', { id, enabled, config: item.config || {} }, '内置包已保存');
     let values;
     try { values = config.read(); } catch (error) { toast(error.message, true); return; }
-    if (kind === 'extension') return act('configureExtension', { id: item.id, enabled, config: values, scope: scope.read() }, '扩展已保存');
-    return act('configureNativePackage', { id: item.id, enabled, config: values, scope: scope.read() }, '插件已保存');
+    if (kind === 'extension') return act('configureExtension', { id, enabled, config: values, scope: scope.read() }, '扩展已保存');
+    return act('configureNativePackage', { id, enabled, config: values, scope: scope.read() }, '插件已保存');
   };
   const head = el('div', { class: 'pkg-head' },
     el('div', { class: 'pkg-title' },
       el('h3', {}, name, el('span', { class: 'tag' }, kindLabel)),
       el('p', { class: 'desc' }, description),
-      el('div', { class: 'meta' }, el('span', { class: 'tag' }, 'v' + version), el('span', { class: 'tag' }, item.id))),
+      el('div', { class: 'meta' }, el('span', { class: 'tag' }, 'v' + version), el('span', { class: 'tag' }, id))),
     el('div', { class: 'pkg-actions' },
       toggle('启用', enabled, value => { enabled = value; }),
       button('保存', save, { small: true })));
   const body = el('div', { class: 'pkg-body' },
+    id === 'qq-emotion' ? button('查看心情与分享记录', showEmotionStatus, {ghost: true, small: true}) : null,
     el('details', {}, el('summary', {}, '作用范围'), scope.node),
     Object.keys(manifest.configSchema || {}).length ? el('details', {}, el('summary', {}, '插件设置'), config.node) : null,
     el('p', { class: 'pkg-note' }, '保存后会重新加载该插件'));
@@ -1073,7 +1097,7 @@ function accountView() {
 function pluginLoading(key, title) {
   const status = pageStatus(key);
   if (status.loading) return stateBox('正在读取' + title, '数据来自本机插件与持久化文件，请稍候。');
-  if (status.error) return stateBox(title + '读取失败', status.error, button('重试', () => loadPage(key, pageLoaders[key], {force: true}), {ghost: true}));
+  if (status.error && !status.data) return stateBox(title + '读取失败', status.error, button('重试', () => loadPage(key, pageLoaders[key], {force: true}), {ghost: true}));
   return null;
 }
 
@@ -1084,6 +1108,11 @@ function stickerDraft(overview) {
     ui.draft = {
       autoSaveIncoming: config.autoSaveIncoming === true,
       autoSaveSent: config.autoSaveSent === true,
+      autoClassify: config.autoClassify !== false,
+      autoSend: config.autoSend === true,
+      expressionMode: config.expressionMode || 'image',
+      sendProbability: config.sendProbability ?? 25,
+      sendCooldownSec: config.sendCooldownSec ?? 60,
       meaningEnabled: config.meaningEnabled !== false,
       collectProbability: config.collectProbability ?? 100,
       collectCooldownSec: config.collectCooldownSec ?? 0,
@@ -1132,6 +1161,7 @@ function stickerView() {
   const toolbar = el('div', {class: 'toolbar-card'},
     el('div', {class: 'filter-grid'},
       field('搜索', search),
+      field('图片状态', select(ui.classification || 'verified', value => {ui.classification = value;}, [['verified','已确认表情包'],['pending','待识别图片'],['excluded','已排除的普通图片']])),
       field('情绪', emotionSelect),
       field('来源', sourceSelect),
       field('排序', sortSelect),
@@ -1165,23 +1195,34 @@ function stickerView() {
     pager(list.total, list.offset, list.limit, offset => { ui.offset = offset; loadPage('sticker', pageLoaders.sticker, {force: true}); }));
 
   const settingsCard = card('收集与分类设置', '这里的概率、冷却、上限和排除词会直接参与自动收藏判定。',
+    ...overview.intelligence?.lastError ? [el('p', {class:'notice'}, overview.intelligence.lastError)] : [],
     el('div', {class: 'form-grid'},
       el('div', {class: 'span-2'}, toggle('群里收到的图自动收进库', draft.autoSaveIncoming, value => { draft.autoSaveIncoming = value; }, '只作用于插件作用范围内的聊天')),
       el('div', {class: 'span-2'}, toggle('她发出去的图自动收进库', draft.autoSaveSent, value => { draft.autoSaveSent = value; }, '联网搜图并成功发送后收藏')),
+      el('div', {class: 'span-2'}, toggle('自动识图分类', draft.autoClassify, value => { draft.autoClassify = value; }, '用当前视觉模型理解情绪和用途；普通照片和截图不参与自主配图')),
+      el('div', {class: 'span-2'}, toggle('聊天时自主配表情', draft.autoSend, value => { draft.autoSend = value; }, '按语境选择图片、QQ 小表情或贴表情回应；看图时不原样回贴图片')),
+      field('自主配图机会（%）', numberInput(draft.sendProbability, value => { draft.sendProbability = value; }, {min: 0, max: 100}), '100 表示每轮都有选图机会；模型仍可决定不用图'),
+      field('自主配图间隔（秒）', numberInput(draft.sendCooldownSec, value => { draft.sendCooldownSec = value; }, {min: 0, max: 3600}), '同一聊天的间隔；0 表示不设间隔，不连续重复同一张'),
       el('div', {class: 'span-2'}, toggle('允许联网查表情含义', draft.meaningEnabled, value => { draft.meaningEnabled = value; })),
+      field('自主表情类型', select(draft.expressionMode, value => {draft.expressionMode = value;}, [['image','只发图片表情'],['mixed','允许混用 QQ 小表情和消息回应']])),
       field('收集概率（%）', numberInput(draft.collectProbability, value => { draft.collectProbability = value; }, {min: 0, max: 100}), '每条图片消息/每次发图只抽一次；100 表示都收'),
       field('收集冷却（秒）', numberInput(draft.collectCooldownSec, value => { draft.collectCooldownSec = value; }, {min: 0, max: 3600}), '同一聊天两次自动收集的最小间隔'),
       field('单条消息最多收几张', numberInput(draft.maxPerMessage, value => { draft.maxPerMessage = value; }, {min: 1, max: 10}), '超出的图片不会读取'),
       field('表情库上限（张）', numberInput(draft.maxStickers, value => { draft.maxStickers = value; }, {min: 10, max: 1000})),
       field('检索返回数量', numberInput(draft.listLimit, value => { draft.listLimit = value; }, {min: 1, max: 20})),
       field('排除关键词', textArea(draft.excludeKeywords, value => { draft.excludeKeywords = value; }, {rows: 3, placeholder: '每行一个；消息包含这些词时不自动收藏'}), '只影响自动收集，不影响手动收藏')),
-    el('p', {class: 'notice'}, '自动收藏是系统行为，不受工具授权影响；作用范围仍由插件的私聊/群范围决定。'),
+    el('p', {class: 'notice'}, '自动收图和自主配图是插件行为：指定群内可与群友互动；私聊仍按用户名单。不会授予群友收藏、删除或发送工具权限。'),
     (() => {
       const save = () => pageAction('sticker', 'configureNativePackage', {
         id: 'qq-sticker', enabled: overview.enabled, scope: overview.scope,
         config: {
           autoSaveIncoming: draft.autoSaveIncoming,
           autoSaveSent: draft.autoSaveSent,
+          autoClassify: draft.autoClassify,
+          autoSend: draft.autoSend,
+          expressionMode: draft.expressionMode,
+          sendProbability: Number(draft.sendProbability),
+          sendCooldownSec: Number(draft.sendCooldownSec),
           meaningEnabled: draft.meaningEnabled,
           collectProbability: Number(draft.collectProbability),
           collectCooldownSec: Number(draft.collectCooldownSec),
@@ -1210,6 +1251,8 @@ function autonomyDraft(overview) {
     const config = overview.config || {};
     ui.draft = {
       enabled: config.enabled === true,
+      sleepAt: config.sleepAt || '00:30',
+      wakeAt: config.wakeAt || '08:30',
       activeHours: config.activeHours || '09:00-23:30',
       runLimitMode: config.runLimitMode || 'recommended',
       maxRunsPerDay: config.maxRunsPerDay ?? 8,
@@ -1233,6 +1276,9 @@ function autonomyDraft(overview) {
       browseEveryHours: config.browseEveryHours ?? 4,
       commentEnabled: config.commentEnabled === true,
       secretAutoDecide: config.secretAutoDecide !== false,
+      freeMode: config.freeMode === true,
+      groupProactiveEnabled: config.groupProactiveEnabled === true,
+      groupInactiveMinutes: config.groupInactiveMinutes ?? 60,
       proactiveEnabled: config.proactiveEnabled === true,
       proactiveInactiveMinutes: config.proactiveInactiveMinutes ?? 240,
       proactiveDailyLimit: config.proactiveDailyLimit ?? 2,
@@ -1241,6 +1287,7 @@ function autonomyDraft(overview) {
       proactiveAllowCasual: config.proactiveAllowCasual === true,
       proactiveAllowTask: config.proactiveAllowTask === true,
       proactiveAllowLearning: config.proactiveAllowLearning === true,
+      proactiveAllowGroupStories: config.proactiveAllowGroupStories === true,
       proactiveMaxChars: config.proactiveMaxChars ?? 240,
       taskRunnerEnabled: config.taskRunnerEnabled === true
     };
@@ -1258,7 +1305,7 @@ function autonomyView() {
   const draft = autonomyDraft(overview);
   const head = pageHeader('自主时间', overview.description || '活动、日记和时间记录均保存在本机，秘密空间独立加密。', [
     statePill(overview.enabled, overview.error),
-    pill(`今日 ${overview.today.runs}/${overview.today.maxRuns} 次`),
+    pill(`今日 ${overview.today.runs}/${overview.today.maxRuns ?? '不限'} 次`),
     overview.next ? pill('当前可安排：' + overview.next.label, '') : pill('当前没有到期的自主活动', '')
   ], [
     pluginEnableToggle(overview, 'autonomy', 'qq-autonomy'),
@@ -1277,36 +1324,64 @@ function autonomyView() {
     stat('今日自主活动', String(overview.today.runs), overview.config.runLimitMode === 'unlimited' ? '不设固定业务上限' : `上限 ${overview.today.maxRuns} 次`),
     stat('日记', String(diaries.total), '自动与手动分开标记'),
     stat('活动记录', String(activities.total), '自动活动与手动补记'),
-    stat('最近活动', overview.lastActivity ? dateText(overview.lastActivity.start) : '尚无', overview.lastActivity?.title || '等待第一次自主活动'));
+    stat('最近活动', overview.lastActivity ? dateText(overview.lastActivity.start) : '尚无', overview.lastActivity?.title || '等待第一次自主活动'),
+    stat('作息', overview.life?.state || '未知', overview.life?.nextTransition ? '下次转换 ' + dateText(overview.life.nextTransition) : '未启用'),
+    stat('社交精力', overview.socialEnergy ? Math.round(Number(overview.socialEnergy.level || 0) * 100) + '%' : '未知', overview.socialEnergy?.reason || '等待消息'));
   let body;
   if (ui.tab === 'diary') body = autonomyDiaryView(diaries, ui);
   else if (ui.tab === 'time') body = autonomyTimeView(time);
-  else if (ui.tab === 'settings') body = [autonomySettingsView(overview, draft), proactiveStatusView(state.data.proactive), taskStatusView(state.data.tasks)];
+  else if (ui.tab === 'settings') body = [autonomySettingsView(overview, draft), proactiveStatusView(state.data.proactive), taskStatusView(state.data.tasks, state.data.taskDetails)];
   else if (ui.tab === 'secret') body = autonomySecretView(ui);
   else body = autonomyActivitiesView(activities, ui);
   return [head, stats, tabsRow, body];
 }
 
-function taskStatusView(tasks) {
+function taskStatusView(tasks, details) {
   if (!tasks) return card('自主任务状态', '任务存储尚未在当前宿主进程加载。', el('p', {class: 'empty'}, '重启宿主后这里会显示真实任务统计。'));
   const latest = tasks.latest ? `${tasks.latest.goal} · ${tasks.latest.status}` : '尚无任务';
-  return card('自主任务状态', '任务状态来自持久化 TaskStore；创建计划不等于执行完成。',
+  const rows = Array.isArray(details) ? details : [];
+  const errorLabels = {input: '参数错误', permission: '权限拒绝', auth: '认证失败', network: '网络不可用', downstream: '下游拒绝', timeout: '超时', unknown: '结果未知', cancelled: '已取消', persistence: '持久化失败', plugin: '插件异常', internal: '内部异常'};
+  const timeText = ms => ms ? new Date(ms).toLocaleString('zh-CN', {hour12: false}) : '—';
+  const stepTable = task => el('div', {class: 'table-wrap'}, el('table', {class: 'table'},
+    el('thead', {}, el('tr', {}, ...['步', '计划', '工具', '状态', '结果', '验证', '错误分类', '追踪'].map(h => el('th', {}, h)))),
+    el('tbody', {}, ...task.steps.map(step => el('tr', {},
+      el('td', {class: 'mono'}, String(step.index)),
+      el('td', {class: 'mono'}, String(step.planIndex || '—')),
+      el('td', {class: 'mono'}, step.tool || '—'),
+      el('td', {}, step.status + (step.state ? ' · ' + step.state : '')),
+      el('td', {}, String(step.outcome || step.note || '—').slice(0, 60)),
+      el('td', {}, step.verified ? '已验证' : step.status === 'done' ? '未回读' : '—'),
+      el('td', {}, errorLabels[step.errorClass] || step.errorClass || '—'),
+      el('td', {class: 'mono'}, (step.traceId || '').slice(-28) || '—'))))));
+  const list = rows.length
+    ? el('div', {}, rows.map(task => el('details', {class: 'task-item'},
+        el('summary', {}, el('span', {class: 'tag'}, task.status), ' ', task.goal),
+        el('p', {class: 'section-note'},
+          '任务 ' + task.id + ' · 尝试 ' + (task.attempts || 0) + ' · 验证 ' + (task.verificationMethod || '—') +
+          ' · 更新 ' + timeText(task.updatedAt) +
+          (task.verification ? ' · 验证' + (task.verification.ok ? '通过' : '未通过') + '：' + (task.verification.note || '') : '') +
+          (task.recovery ? ' · 已于 ' + timeText(task.recovery.acknowledgedAt) + ' 确认恢复' : '')),
+        stepTable(task),
+        el('p', {class: 'section-note'}, '用时 ' + timeText(task.createdAt) + ' → ' + timeText(task.closedAt || task.updatedAt)))))
+    : el('p', {class: 'empty'}, '尚无任务记录。任务动作默认未启用，需在权限页启用 qq.task.* 后才能由模型调用。');
+  return card('自主任务状态', '任务状态、步骤、工具、错误分类与追踪标识均来自持久化 TaskStore；创建计划不等于执行完成。',
     el('div', {class: 'stat-grid'},
       stat('任务总数', String(tasks.total || 0), '真实持久化记录'),
       stat('活动任务', String(tasks.active || 0), '未完成或未取消'),
       stat('等待授权', String(tasks.waitingApproval || 0), '需要明确授权'),
       stat('失败任务', String(tasks.failed || 0), '可在任务详情重试')),
-    el('p', {class: 'section-note'}, '最近任务：' + latest + '。任务动作默认未启用，需在权限页启用 qq.task.* 后才能由模型调用。'));
+    list,
+    el('p', {class: 'section-note'}, '最近任务：' + latest + '。'));
 }
 
 function proactiveStatusView(status) {
   if (!status) return card('主动联系状态', '主动联系服务尚未在当前宿主进程加载。', el('p', {class: 'empty'}, '重启宿主后这里会显示真实调度状态。'));
   const rows = el('div', {class: 'kv'},
     el('dt', {}, '开关'), el('dd', {}, status.enabled ? '已启用' : '未启用'),
-    el('dt', {}, '今日已尝试'), el('dd', {}, `${status.today || 0}/${status.dailyLimit || 0}`),
+    el('dt', {}, '今日已尝试'), el('dd', {}, `${status.today || 0}/${status.dailyLimit === null ? '不限' : status.dailyLimit ?? 0}`),
     el('dt', {}, '不活跃阈值'), el('dd', {}, `${status.inactiveMinutes || 0} 分钟`),
-    el('dt', {}, '最短间隔'), el('dd', {}, `${status.minIntervalMinutes || 0} 分钟`),
-    el('dt', {}, '安静时段'), el('dd', {}, status.quietHours || '—'),
+    el('dt', {}, '最短间隔'), el('dd', {}, status.dailyLimit === null ? '不设业务间隔，每分钟检查一次' : `${status.minIntervalMinutes || 0} 分钟`),
+    el('dt', {}, '安静时段'), el('dd', {}, status.dailyLimit === null ? '自由模式不限制' : status.quietHours || '—'),
     el('dt', {}, '最近尝试'), el('dd', {}, status.lastAttemptAt ? dateText(status.lastAttemptAt) : '尚无'),
     el('dt', {}, '最近发送'), el('dd', {}, status.lastSentAt ? dateText(status.lastSentAt) : '尚无'),
     el('dt', {}, '最近结果'), el('dd', {}, status.lastOutcome || '尚无'));
@@ -1510,6 +1585,8 @@ function autonomySettingsView(overview, draft) {
     id: 'qq-autonomy', enabled: overview.enabled, scope: overview.scope,
     config: {
       enabled: draft.enabled,
+      sleepAt: draft.sleepAt,
+      wakeAt: draft.wakeAt,
       activeHours: draft.activeHours,
       runLimitMode: draft.runLimitMode,
       maxRunsPerDay: Number(draft.maxRunsPerDay),
@@ -1533,6 +1610,9 @@ function autonomySettingsView(overview, draft) {
       browseEveryHours: Number(draft.browseEveryHours),
       commentEnabled: draft.commentEnabled,
       secretAutoDecide: draft.secretAutoDecide,
+      freeMode: draft.freeMode,
+      groupProactiveEnabled: draft.groupProactiveEnabled,
+      groupInactiveMinutes: Number(draft.groupInactiveMinutes),
       proactiveEnabled: draft.proactiveEnabled,
       proactiveInactiveMinutes: Number(draft.proactiveInactiveMinutes),
       proactiveDailyLimit: Number(draft.proactiveDailyLimit),
@@ -1541,14 +1621,15 @@ function autonomySettingsView(overview, draft) {
       proactiveAllowCasual: draft.proactiveAllowCasual,
       proactiveAllowTask: draft.proactiveAllowTask,
       proactiveAllowLearning: draft.proactiveAllowLearning,
+      proactiveAllowGroupStories: draft.proactiveAllowGroupStories,
       proactiveMaxChars: Number(draft.proactiveMaxChars),
       taskRunnerEnabled: draft.taskRunnerEnabled
     }
   }, '自主时间设置已保存');
   const settingsBar = savebar('保存后调度器会读取新配置；修改不会伪造活动记录', save);
   settingsBar.prepend(resetDraftButton('autonomy'));
-  const runLimitControl = draft.runLimitMode === 'unlimited'
-    ? el('p', {class: 'notice'}, '不设固定业务次数上限；调度仍每分钟最多一次，并受活动时段与外部接口限制。')
+  const runLimitControl = draft.freeMode || draft.runLimitMode === 'unlimited'
+    ? el('p', {class: 'notice'}, '不设固定业务次数上限；每分钟检查一次，仍受外部接口限制。自由模式下活动时段也不限制。')
     : draft.runLimitMode === 'recommended'
       ? el('p', {class: 'section-note'}, '推荐上限：每天 8 次。切换“自定义”后才使用下面的数值。')
       : field('每天最多活动次数', numberInput(draft.maxRunsPerDay, value => { draft.maxRunsPerDay = value; }, {min: 1, max: 1440}));
@@ -1565,6 +1646,11 @@ function autonomySettingsView(overview, draft) {
   return card('自主时间设置', '所有活动开关都会影响真实调度；发空间和评论默认关闭。',
     el('div', {class: 'form-grid'},
       el('div', {class: 'span-2'}, toggle('启用自主时间', draft.enabled, value => { draft.enabled = value; }, '关闭后不安排任何自主活动，也不注入时间上下文')),
+      el('div', {class: 'span-2'}, toggle('自由活动模式', draft.freeMode, value => { draft.freeMode = value; }, '取消本地业务配额、安静时段、群聊抽样和主动联系间隔；保留真实回执、去重、权限与单任务执行。主动联系和群冷场发言需分别开启。')),
+      field('入睡时间', textInput(draft.sleepAt, value => { draft.sleepAt = value; }, {placeholder: '00:30'})),
+      field('起床时间', textInput(draft.wakeAt, value => { draft.wakeAt = value; }, {placeholder: '08:30'})),
+      el('div', {class: 'span-2'}, toggle('群冷场时主动发言', draft.groupProactiveEnabled, value => { draft.groupProactiveEnabled = value; }, '只在已监听且自主时间包作用范围内的群，根据真实话题决定是否开口；没有可说的内容就保持安静。')),
+      field('群冷场多久后考虑发言（分钟）', numberInput(draft.groupInactiveMinutes, value => { draft.groupInactiveMinutes = value; }, {min: 5, max: 10080})),
       field('活动时段', textInput(draft.activeHours, value => { draft.activeHours = value; }, {placeholder: '09:00-23:30'})),
       field('次数策略', select(draft.runLimitMode, value => { draft.runLimitMode = value; render(); }, [['recommended', '系统推荐'], ['custom', '自定义'], ['unlimited', '不限制业务次数']])),
       runLimitControl,
@@ -1581,15 +1667,16 @@ function autonomySettingsView(overview, draft) {
       field('翻空间间隔（小时）', numberInput(draft.browseEveryHours, value => { draft.browseEveryHours = value; }, {min: 1, max: 48})),
       el('div', {class: 'span-2'}, toggle('看到有趣的就评论', draft.commentEnabled, value => { draft.commentEnabled = value; }, '每天最多一条，且必须来自本次实际浏览到的说说')),
       el('div', {class: 'span-2'}, toggle('让她自主决定秘密空间', draft.secretAutoDecide, value => { draft.secretAutoDecide = value; }, '由现有受限 Agent 决定是否创建、密码气质和是否分享；用户不设置密码')),
-      el('div', {class: 'span-2'}, toggle('允许主动联系主人', draft.proactiveEnabled, value => { draft.proactiveEnabled = value; }, '默认关闭；开启后仍需不活跃、安静时段、每日上限和最短间隔；无真实内容时不发送')),
+      el('div', {class: 'span-2'}, toggle('允许主动联系主人', draft.proactiveEnabled, value => { draft.proactiveEnabled = value; }, '开启后根据最近对话主动联系；自由模式取消安静时段和次数配额，模型仍可选择保持安静')),
       field('未互动多少分钟后考虑（分钟）', numberInput(draft.proactiveInactiveMinutes, value => { draft.proactiveInactiveMinutes = value; }, {min: 30, max: 10080})),
-      field('每日最多主动消息', numberInput(draft.proactiveDailyLimit, value => { draft.proactiveDailyLimit = value; }, {min: 0, max: 20})),
-      field('最短间隔（分钟）', numberInput(draft.proactiveMinIntervalMinutes, value => { draft.proactiveMinIntervalMinutes = value; }, {min: 30, max: 1440})),
-      field('安静时段', textInput(draft.proactiveQuietHours, value => { draft.proactiveQuietHours = value; }, {placeholder: '23:00-08:00'})),
+      field('每日最多主动消息（普通模式）', numberInput(draft.proactiveDailyLimit, value => { draft.proactiveDailyLimit = value; }, {min: 0, max: 20})),
+      field('最短间隔（普通模式，分钟）', numberInput(draft.proactiveMinIntervalMinutes, value => { draft.proactiveMinIntervalMinutes = value; }, {min: 30, max: 1440})),
+      field('安静时段（普通模式）', textInput(draft.proactiveQuietHours, value => { draft.proactiveQuietHours = value; }, {placeholder: '23:00-08:00'})),
       field('主动消息最多字数', numberInput(draft.proactiveMaxChars, value => { draft.proactiveMaxChars = value; }, {min: 40, max: 500})),
       el('div', {class: 'span-2'}, toggle('允许普通闲聊式主动联系', draft.proactiveAllowCasual, value => { draft.proactiveAllowCasual = value; }, '关闭时只跟进最近对话里真实存在的未完成事项')),
       el('div', {class: 'span-2'}, toggle('允许任务完成通知', draft.proactiveAllowTask, value => { draft.proactiveAllowTask = value; }, '仅任务进入 done 后，且仍受频率/安静时段限制')),
       el('div', {class: 'span-2'}, toggle('允许学习进展通知', draft.proactiveAllowLearning, value => { draft.proactiveAllowLearning = value; }, '仅真实学习结果后，且仍受频率/安静时段限制')),
+      el('div', {class: 'span-2'}, toggle('允许群聊见闻私聊分享', draft.proactiveAllowGroupStories, value => { draft.proactiveAllowGroupStories = value; }, '需要启用“情绪与见闻”并指定观察群；自由模式沿用当前发送策略')),
       el('div', {class: 'span-2'}, toggle('允许自动推进持久化任务', draft.taskRunnerEnabled, value => { draft.taskRunnerEnabled = value; }, '默认关闭；只推进已明确进入 planning/executing 的任务，每步必须有工具结果；不发 QQ 消息'))),
     el('div', {class: 'card'}, el('header', {}, el('h2', {}, '历史保留与分页'), el('p', {class: 'desc'}, '“不主动删除”不代表无限加载；列表仍分页读取。')),
       el('div', {class: 'form-grid'},
@@ -2272,7 +2359,7 @@ function qzoneAvatar(id, size = 28) {
 function qzoneView() {
   const ui = uiFor('qzone');
   const qzoneCache = pageCache.get('qzone');
-  if (!qzoneCache || (!qzoneCache.loading && Date.now() - (qzoneCache.at || 0) > 30000)) loadPage('qzone', pageLoaders.qzone, {force: Boolean(qzoneCache?.data)});
+  if (!qzoneCache || (!qzoneCache.loading && !qzoneCache.error && Date.now() - (qzoneCache.at || 0) > 30000)) loadPage('qzone', pageLoaders.qzone, {force: Boolean(qzoneCache?.data)});
   const loading = pluginLoading('qzone', 'QQ 空间');
   if (loading) return [pageHeader('QQ 空间', '好友列表与真实空间动态。', [], []), loading];
   const data = pageCache.get('qzone').data;
@@ -2381,7 +2468,8 @@ function qzoneView() {
       el('div', {class: 'span-2'}, field('允许浏览/评论的 QQ', textArea(draft.allowedTargets, value => { draft.allowedTargets = value; }, {rows: 2, placeholder: '留空表示不额外限制；不绕过空间隐私'})))),
     settingsBar);
 
-  return [head, stats, el('div', {class: 'split qzone-layout'}, friendCard, feedCard), settingsCard];
+  const refreshError = qzoneCache?.error ? stateBox('刷新失败，显示上次读取的数据', qzoneCache.error, button('重试', () => loadPage('qzone', pageLoaders.qzone, {force: true}), {ghost: true})) : null;
+  return [head, refreshError, stats, el('div', {class: 'split qzone-layout'}, friendCard, feedCard), settingsCard];
 }
 
 function qzonePost(post) {
@@ -2520,7 +2608,7 @@ pageLoaders.sticker = async () => {
   const list = await secureApi('stickerAdmin', {
     op: 'list',
     query: {
-      query: ui.query || '', emotion: ui.emotion || '', source: ui.source || '',
+      query: ui.query || '', emotion: ui.emotion || '', source: ui.source || '', classification: ui.classification || 'verified',
       from: ui.from || '', to: ui.to || '',
       sort: ui.sort || 'recent', offset: ui.offset || 0, limit: 24
     }
@@ -2537,11 +2625,13 @@ pageLoaders.qzone = async () => {
   try {
     friends = await secureApi('qzoneAdmin', {op: 'friends', query: {query: ''}});
   } catch (error) {
+    if (error.message === '请重新登录') throw error;
     friendsError = formatError(error);
   }
   try {
     feed = await secureApi('qzoneAdmin', {op: 'feed', query: {offset: 0, limit: 20, friendId: ui.friendId || '', order: ui.qzoneOrder || 'desc'}});
   } catch (error) {
+    if (error.message === '请重新登录') throw error;
     feedError = formatError(error);
   }
   if (friendsError) friends.error = friendsError;

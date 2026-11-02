@@ -26,7 +26,7 @@ export async function readPublic(value,{signal,maxBytes=1500000,timeoutMs=12000,
     if([301,302,303,307,308].includes(res.statusCode)){const location=res.headers.location;res.resume();if(!location)return reject(Error('网页跳转缺少地址'));return accept({redirect:location});}
     if(res.statusCode!==200){res.resume();return reject(Error('网页请求失败：HTTP '+res.statusCode));}
     const type=String(res.headers['content-type']||'').toLowerCase();
-    if(!/^(text\/(html|plain|xml)|application\/(xhtml\+xml|rss\+xml|xml))(?:;|$)/.test(type)){res.resume();return reject(Error('仅支持网页、纯文本和 RSS/XML，不能下载或执行文件'));}
+    if(!/^(text\/(html|plain|xml)|application\/(xhtml\+xml|rss\+xml|xml|json)|text\/json)(?:;|$)/.test(type)){res.resume();return reject(Error('仅支持网页、纯文本、RSS/XML 和 JSON，不能下载或执行文件'));}
     if(res.headers['content-encoding']&&res.headers['content-encoding']!=='identity'){res.resume();return reject(Error('网页使用了不支持的压缩格式'));}
     if(Number(res.headers['content-length'])>maxBytes){res.destroy();return reject(Error('网页超过读取大小限制'));}
     const chunks=[];let length=0;

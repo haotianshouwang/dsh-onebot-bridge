@@ -1,5 +1,6 @@
 import {isOwner} from '../../core/owners.js';
 import {createHash} from 'node:crypto';
+import {stateOf} from '../../core/result.js';
 export const manifest={id:'poke',name:'戳一戳互动',version:'1.0.0',apiVersion:2,services:['poke-interaction']};
 export const pokeDefaults=()=>({mode:'text',textSource:'ai',text:'怎么啦？',cooldown:30,probability:100,autoPokeEnabled:false,pokeProbability:100,continueConversation:true,groups:[],users:[],private:true,group:true});
 export function validatePokeConfig(value={}){
@@ -22,7 +23,7 @@ export class PokePackage{
  constructor(store,services,{now=()=>Date.now(),random=Math.random}={}){Object.assign(this,{store,services,now,random});this.cooldowns=new Map();this.plans=new Map();}
  config(){return {...pokeDefaults(),...this.store.data.framework.builtins.poke?.config};}
  active(){const p=this.store.data.framework.builtins.poke;return !!p?.enabled&&!p.uninstalled&&this.store.data.settings.pokeReplyEnabled!==false;}
- async back(event,msg,c){const generation=this.store.data.framework.generation;if(!c.autoPokeEnabled||this.random()*100>=c.pokeProbability)return null;try{const r=await this.services.back(event,()=>this.active()&&this.config().autoPokeEnabled);if(r.outcome==='confirmed'&&c.continueConversation&&this.active()&&this.store.data.framework.generation===generation)this.services.continued(msg);return r;}catch(e){this.services.log('warn','回戳未完成：'+e.message);return null;}}
+ async back(event,msg,c){const generation=this.store.data.framework.generation;if(!c.autoPokeEnabled||this.random()*100>=c.pokeProbability)return null;try{const r=await this.services.back(event,()=>this.active()&&this.config().autoPokeEnabled),state=stateOf(r);if(['submitted','accepted','confirmed'].includes(state)&&c.continueConversation&&this.active()&&this.store.data.framework.generation===generation)this.services.continued(msg);return r;}catch(e){this.services.log('warn','回戳未完成：'+e.message);return null;}}
  async handle(event){
   const s=this.store.data.settings,f=this.store.data.framework,c=this.config();
   if(!this.active()||event.type!=='notice'||event.name!=='notify'||event.subtype!=='poke'||event.target!==event.bot||event.user===event.bot||!/^\d{4,16}$/.test(event.user||'')||!s.enabled||!f.listenNotices||f.paused||!Number.isFinite(event.time)||Math.abs(this.now()/1000-event.time)>300||this.services.bot()?.status.bot!==event.bot)return false;
@@ -43,7 +44,7 @@ export class PokePackage{
   }catch(e){state.pending=false;this.plans.delete(msg.id);throw e;}
  }
  async resolve(msg,value){const plan=this.plans.get(msg.id);if(!plan||!this.active())return {text:'',skip:true};
-  try{const parsed=parsePokePlan(value),result=parsed.poke?await this.back(plan.event,plan.msg,plan.config):null;return {text:parsed.reply?parsed.text:'',skip:!parsed.reply||!parsed.text.trim(),decision:{reply:parsed.reply,pokeRequested:parsed.poke,poke:result?.outcome==='confirmed',pokeOutcome:result?.outcome||(parsed.poke?'not-sent':'none')}};
+  try{const parsed=parsePokePlan(value),result=parsed.poke?await this.back(plan.event,plan.msg,plan.config):null,state=result?stateOf(result):(parsed.poke?'not-sent':'none');return {text:parsed.reply?parsed.text:'',skip:!parsed.reply||!parsed.text.trim(),decision:{reply:parsed.reply,pokeRequested:parsed.poke,poke:state==='confirmed',pokeState:state,pokeOutcome:result?.outcome||(parsed.poke?'not-sent':'none')}};
   }catch(e){this.services.log('warn','互动决策未采用：'+e.message);return {text:plan.config.text,skip:false};}
  }
 }

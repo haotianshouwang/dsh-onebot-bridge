@@ -1,0 +1,136 @@
+{
+  "id": "qq-media-agent",
+  "name": "媒体平台助手",
+  "version": "0.3.0",
+  "apiVersion": 2,
+  "type": "native-source",
+  "entry": "src/builtins/media-agent/index.js",
+  "bundled": true,
+  "description": "统一接入 B 站和抖音的公开查询、观看、日报与受控外发能力。",
+  "dependencies": {
+    "framework": ">=0.13.0"
+  },
+  "configVersion": 2,
+  "capabilities": [
+    "actions",
+    "storage"
+  ],
+  "configSchema": {
+    "bilibiliEnabled": {
+      "type": "boolean",
+      "title": "启用 B 站适配",
+      "default": false
+    },
+    "douyinEnabled": {
+      "type": "boolean",
+      "title": "启用抖音适配",
+      "default": false
+    },
+    "browserEnabled": {
+      "type": "boolean",
+      "title": "启用专用 Edge 浏览器",
+      "default": false
+    },
+    "autoWatchEnabled": {
+      "type": "boolean",
+      "title": "允许自动观看",
+      "default": false
+    },
+    "outboundEnabled": {
+      "type": "boolean",
+      "title": "允许评论、私信或分享",
+      "default": false
+    },
+    "platformMessageEnabled": {
+      "type": "boolean",
+      "title": "允许平台私信",
+      "default": false
+    },
+    "messageContacts": {
+      "type": "string[]",
+      "title": "平台私信联系人白名单",
+      "description": "每行填写 platform:contactId，例如 bilibili:123456 或 douyin:MS4x；只允许向白名单联系人发送",
+      "default": [],
+      "maxItems": 100
+    },
+    "dailyWatchMinutes": {
+      "type": "number",
+      "title": "每日观看上限（分钟）",
+      "default": 10,
+      "min": 0,
+      "max": 1440,
+      "integer": true
+    },
+    "reportRetentionDays": {
+      "type": "number",
+      "title": "运行记录保留天数",
+      "default": 30,
+      "min": 1,
+      "max": 3650,
+      "integer": true
+    },
+    "runHistoryLimit": {
+      "type": "number",
+      "title": "最多保留运行记录",
+      "default": 200,
+      "min": 1,
+      "max": 1000,
+      "integer": true
+    }
+  },
+  "storagePolicy": {
+    "collection": "runs",
+    "timestamp": "createdAt",
+    "daysField": "reportRetentionDays",
+    "limitField": "runHistoryLimit"
+  },
+  "settings": {
+    "title": "媒体平台助手",
+    "description": "B 站和抖音共用权限、额度和任务生命周期；公开查询与受控专用 Edge 观看均使用真实宿主能力。",
+    "sections": [
+      {
+        "title": "平台",
+        "fields": [
+          "bilibiliEnabled",
+          "douyinEnabled",
+          "browserEnabled"
+        ]
+      },
+      {
+        "title": "观看策略",
+        "fields": [
+          "autoWatchEnabled",
+          "dailyWatchMinutes"
+        ]
+      },
+      {
+        "title": "外发权限",
+        "fields": [
+          "outboundEnabled",
+          "platformMessageEnabled",
+          "messageContacts"
+        ]
+      },
+      {
+        "title": "记录",
+        "fields": [
+          "reportRetentionDays",
+          "runHistoryLimit"
+        ]
+      }
+    ]
+  },
+  "configMigrations": [
+    {
+      "to": 2,
+      "defaults": {
+        "platformMessageEnabled": false,
+        "messageContacts": []
+      }
+    }
+  ],
+  "permissions": [
+    "actions",
+    "storage"
+  ]
+}

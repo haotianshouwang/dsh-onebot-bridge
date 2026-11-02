@@ -70,9 +70,12 @@ export class StickerStore {
    * 按后台筛选条件读取表情索引。所有条件在内存索引上执行，不读取图片字节。
    * 旧调用只依赖 tag/emotion/limit，这里保持兼容，并补充 query/source/offset/sort。
    */
-  filtered({tag, emotion, source, query, from = 0, to = 0, sort = 'recent'} = {}) {
+  filtered({tag, emotion, source, query, from = 0, to = 0, sort = 'recent', classification = 'all'} = {}) {
     const text = String(query || '').trim().toLowerCase();
     const rows = [...this.items.values()].filter(row => {
+      if (classification === 'verified' && row.isSticker !== true) return false;
+      if (classification === 'excluded' && row.isSticker !== false) return false;
+      if (classification === 'pending' && typeof row.isSticker === 'boolean') return false;
       if (tag && !(row.tags || []).includes(String(tag))) return false;
       if (emotion && row.emotion !== String(emotion)) return false;
       if (source && row.source !== String(source)) return false;
@@ -96,16 +99,16 @@ export class StickerStore {
     return this.filtered(filters).length;
   }
 
-  list({tag, emotion, source, query, from, to, limit = 50, offset = 0, sort = 'recent'} = {}) {
-    const rows = this.filtered({tag, emotion, source, query, from, to, sort});
+  list({tag, emotion, source, query, from, to, limit = 50, offset = 0, sort = 'recent', classification} = {}) {
+    const rows = this.filtered({tag, emotion, source, query, from, to, sort, classification});
     const start = Math.max(0, Number(offset) || 0);
     return rows.slice(start, start + Math.min(Math.max(Number(limit) || 50, 1), 100));
   }
 
   /** 分类与来源分布，全部由真实索引聚合。 */
-  categories() {
+  categories(filters = {}) {
     const counts = new Map();
-    for (const row of this.items.values()) {
+    for (const row of this.filtered(filters)) {
       const key = String(row.emotion || '');
       counts.set(key, (counts.get(key) || 0) + 1);
     }
@@ -154,7 +157,7 @@ export class StickerStore {
    * @param bytes 图片字节
    * @param context 当前聊天的执行上下文（只用来记录来源，不用于鉴权）
    */
-  async save({bytes, name, tags, usage, emotion = '', source = 'manual', context, max = MAX_STICKERS}) {
+  async save({bytes, name, tags, usage, emotion = '', isSticker, source = 'manual', context, max = MAX_STICKERS}) {
     if (!this.ready) throw new Error('表情包库尚未就绪');
     const buffer = Buffer.from(bytes);
     if (!buffer.length) throw new Error('表情内容为空');
@@ -169,6 +172,10 @@ export class StickerStore {
       existing.tags = [...merged].slice(0, 20);
       if (usage) existing.usage = String(usage).slice(0, 120);
       if (emotion) existing.emotion = String(emotion).slice(0, 12);
+      if (typeof isSticker === 'boolean') {
+        existing.isSticker = isSticker;
+        existing.annotatedAt = Date.now();
+      }
       existing.usedAt = Date.now();
       await this.persist();
       return {sticker: {...existing, tags: [...existing.tags]}, deduped: true};
@@ -185,6 +192,7 @@ export class StickerStore {
       tags: [...new Set((tags || []).map(tag => String(tag).slice(0, 20)))].slice(0, 20),
       usage: usage ? String(usage).slice(0, 120) : '',
       emotion: emotion ? String(emotion).slice(0, 12) : '',
+      ...typeof isSticker === 'boolean' ? {isSticker, annotatedAt: Date.now()} : {},
       source, createdAt: Date.now(), usedAt: Date.now(),
       origin: context ? {kind: context.kind, peer: String(context.peer)} : null
     };
@@ -194,12 +202,13 @@ export class StickerStore {
   }
 
   // 看到图之后补情绪、用途和标签；只改给出的字段，不覆盖没传的内容。
-  async annotate(id, {name, emotion, tags, usage} = {}) {
+  async annotate(id, {name, emotion, tags, usage, isSticker} = {}) {
     const row = this.items.get(String(id));
     if (!row) throw new Error('没有这个表情');
     if (name) row.name = String(name).slice(0, 40);
     if (emotion) row.emotion = String(emotion).slice(0, 12);
     if (usage) row.usage = String(usage).slice(0, 120);
+    if (typeof isSticker === 'boolean') row.isSticker = isSticker;
     if (Array.isArray(tags)) row.tags = [...new Set([...(row.tags || []), ...tags.map(tag => String(tag).slice(0, 20))])].slice(0, 20);
     row.annotatedAt = Date.now();
     await this.persist();

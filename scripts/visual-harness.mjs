@@ -198,7 +198,7 @@ const server = http.createServer(async (req, res) => {
     } catch (error) { return json(res, {ok: false, error: String(error.message || error)}, 400); }
   }
   const name = url.pathname === '/' ? 'index.html' : url.pathname.replace(/^\/assets\//, '');
-  if (['index.html', 'app.css', 'app.js', 'star-map.js'].includes(name)) {
+  if (['index.html', 'app.css', 'app.js', 'star-map.js', 'three.module.js'].includes(name)) {
     const body = await readFile(path.join(publicDir, name));
     res.writeHead(200, {'content-type': types[path.extname(name)] || 'application/octet-stream', 'cache-control': 'no-store'});
     return res.end(body);

@@ -87,6 +87,44 @@
       "title": "允许联网查表情含义",
       "default": true
     },
+    "autoClassify": {
+      "type": "boolean",
+      "title": "自动识图分类",
+      "description": "收藏后用当前视觉模型标注情绪与用途；不支持看图时保留原图待手动分类。",
+      "default": true
+    },
+    "autoSend": {
+      "type": "boolean",
+      "title": "聊天时自主配表情",
+      "description": "按语境选择图片、QQ 小表情或消息贴表情回应中的一种；看图回复不原样回贴图片。无需群友获得工具权限。",
+      "default": false
+    },
+    "expressionMode": {
+      "type": "string",
+      "title": "自主表情类型",
+      "enum": [
+        "image",
+        "mixed"
+      ],
+      "default": "image",
+      "description": "image 只用已确认的图片表情；mixed 才允许混用 QQ 小表情和消息贴表情。所有配图独立发送。"
+    },
+    "sendProbability": {
+      "type": "number",
+      "title": "自主配图机会（%）",
+      "default": 25,
+      "min": 0,
+      "max": 100,
+      "integer": true
+    },
+    "sendCooldownSec": {
+      "type": "number",
+      "title": "自主配图间隔（秒）",
+      "default": 60,
+      "min": 0,
+      "max": 3600,
+      "integer": true
+    },
     "maxStickers": {
       "type": "number",
       "title": "表情库上限（张）",
@@ -122,6 +160,16 @@
         "title": "联网查含义",
         "fields": [
           "meaningEnabled"
+        ]
+      },
+      {
+        "title": "理解与表达",
+        "fields": [
+          "autoClassify",
+          "autoSend",
+          "expressionMode",
+          "sendProbability",
+          "sendCooldownSec"
         ]
       }
     ]

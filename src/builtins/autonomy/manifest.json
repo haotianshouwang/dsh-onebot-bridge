@@ -17,11 +17,45 @@
     "events"
   ],
   "configSchema": {
+    "freeMode": {
+      "type": "boolean",
+      "title": "自由活动模式",
+      "default": false,
+      "description": "取消日记、学习、学黑话等本地自主活动的业务次数上限；主动联系仍受安静时段、每日上限、最短间隔、社交精力和内容判断约束。"
+    },
+    "groupProactiveEnabled": {
+      "type": "boolean",
+      "title": "群冷场时主动发言",
+      "default": false,
+      "description": "仅在已监听且本插件作用范围内的群，根据真实聊天背景决定是否发言。"
+    },
+    "groupInactiveMinutes": {
+      "type": "number",
+      "title": "群冷场多久后考虑发言（分钟）",
+      "default": 60,
+      "min": 5,
+      "max": 10080,
+      "integer": true
+    },
     "enabled": {
       "type": "boolean",
       "title": "启用自主时间",
       "default": false,
       "description": "总开关。关闭后不安排任何自主活动，也不注入时间信息。"
+    },
+    "sleepAt": {
+      "type": "string",
+      "title": "入睡时间",
+      "default": "00:30",
+      "maxLength": 5,
+      "description": "格式 HH:MM。"
+    },
+    "wakeAt": {
+      "type": "string",
+      "title": "起床时间",
+      "default": "08:30",
+      "maxLength": 5,
+      "description": "格式 HH:MM。"
     },
     "activeHours": {
       "type": "string",
@@ -258,6 +292,12 @@
       "default": false,
       "description": "学习活动产生真实结果后，允许生成一条受频率限制的通知。"
     },
+    "proactiveAllowGroupStories": {
+      "type": "boolean",
+      "title": "允许群聊见闻私聊分享",
+      "default": false,
+      "description": "情绪与见闻插件发现真实话题后，允许她给主人私聊分享；发送前再次核对来源范围。"
+    },
     "taskRunnerEnabled": {
       "type": "boolean",
       "title": "允许自动推进持久化任务",
@@ -273,6 +313,11 @@
         "title": "总开关与节奏",
         "fields": [
           "enabled",
+          "freeMode",
+          "sleepAt",
+          "wakeAt",
+          "groupProactiveEnabled",
+          "groupInactiveMinutes",
           "activeHours",
           "runLimitMode",
           "maxRunsPerDay",
@@ -329,6 +374,7 @@
           "proactiveAllowCasual",
           "proactiveAllowTask",
           "proactiveAllowLearning",
+          "proactiveAllowGroupStories",
           "proactiveMaxChars"
         ]
       },

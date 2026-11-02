@@ -30,17 +30,19 @@ const stickerItem = () => ({
 test('表情包管理：真实索引分页、详情图片、删除与未分类统计', async t => {
   const dir = await temp(t);
   const store = await new StickerStore(path.join(dir, 'stickers')).open();
-  const first = await store.save({bytes: png, name: '开心', emotion: '开心', tags: ['猫'], source: 'stolen', context: {kind: 'group', peer: '88888'}, max: 20});
+  const first = await store.save({bytes: png, name: '开心', emotion: '开心', tags: ['猫'], isSticker: true, source: 'stolen', context: {kind: 'group', peer: '88888'}, max: 20});
   await store.save({bytes: Buffer.concat([png, Buffer.from('x')]), name: '无标签', source: 'auto-incoming', context: {kind: 'group', peer: '88888'}, max: 20});
   const admin = createStickerAdmin({stickers: store, getItem: () => stickerItem()});
   const overview = admin.overview();
-  assert.equal(overview.stats.total, 2);
+  assert.equal(overview.stats.total, 1);
+  assert.equal(overview.stats.pending, 1);
   const today = new Date();
   const day = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  assert.equal(admin.list({from: day, to: day}).total, 2);
+  assert.equal(admin.list({from: day, to: day}).total, 1);
+  assert.equal(admin.list({classification: 'pending'}).total, 1);
   assert.equal(admin.list({from: '2099-01-01'}).total, 0);
   assert.equal(overview.categories.find(row => row.emotion === '开心').count, 1);
-  assert.equal(overview.categories.find(row => !row.emotion).count, 1);
+  assert.equal(overview.categories.some(row => !row.emotion), false);
   const list = admin.list({query: '猫'});
   assert.equal(list.items.length, 1);
   assert.equal(list.items[0].sourceLabel, '偷图');
@@ -50,7 +52,8 @@ test('表情包管理：真实索引分页、详情图片、删除与未分类�
   assert.equal(image.bytes.length, png.length);
   const removed = await admin.remove(first.sticker.id);
   assert.equal(removed.removed.name, '开心');
-  assert.equal(admin.overview().stats.total, 1);
+  assert.equal(admin.overview().stats.total, 0);
+  assert.equal(admin.overview().stats.pending, 1);
 });
 
 test('自动收藏概率、冷却、排除词与单条上限都参与真实判定', async t => {
@@ -62,7 +65,7 @@ test('自动收藏概率、冷却、排除词与单条上限都参与真实判�
   const auto = createStickerAutoSave({
     stickers: store, readResource: async () => png,
     fetchMessageBytes: async () => { fetches += 1; return png; },
-    scope, random: () => 0.99, now: () => Date.now()
+    scope, inspect: async () => ({isSticker: true}), random: () => 0.99, now: () => Date.now()
   });
   const context = {kind: 'group', peer: '88888', key: 'bot:group:88888', actor: '10000001'};
   const message = {sender: '群友', text: '广告图片', parts: [{type: 'image'}, {type: 'image'}]};

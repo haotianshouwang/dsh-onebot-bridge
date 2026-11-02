@@ -9,7 +9,7 @@
 //
 // 概率、冷却、单条上限和排除词都在真正取图之前判定，配置页展示的百分比就是这里使用的百分比。
 
-export function createStickerAutoSave({stickers, readResource, fetchMessageBytes, scope, log = () => {}, random = Math.random, now = () => Date.now()}) {
+export function createStickerAutoSave({stickers, readResource, fetchMessageBytes, scope, inspect, onSaved, log = () => {}, random = Math.random, now = () => Date.now()}) {
   const lastAccepted = new Map();
 
   // 与插件作用范围判定保持一致：先看人（allUsers 或名单），再看聊天类型与群号。
@@ -17,7 +17,7 @@ export function createStickerAutoSave({stickers, readResource, fetchMessageBytes
     const current = scope();
     const sc = current.scope;
     if (current.enabled === false || !sc) return false;
-    const actorOk = sc.allUsers === true || (sc.users || []).includes(String(context.actor));
+    const actorOk = context.kind === 'group' || sc.allUsers === true || (sc.users || []).includes(String(context.actor));
     if (!actorOk) return false;
     return context.kind === 'group' ? (sc.groups || []).includes(String(context.peer)) : sc.private === true;
   };
@@ -47,7 +47,11 @@ export function createStickerAutoSave({stickers, readResource, fetchMessageBytes
 
   const remember = async (bytes, context, {name, source}) => {
     if (!bytes?.length) return null;
-    const {sticker, deduped} = await stickers.save({bytes, name, source, context, max: config().maxStickers});
+    const generation = scope().generation;
+    const classification = await inspect?.(bytes, context);
+    if (!classification || classification.isSticker !== true || !allowed(context) || generation !== scope().generation) return null;
+    const {sticker, deduped} = await stickers.save({bytes, name, ...classification, source, context, max: config().maxStickers});
+    if (onSaved) await onSaved(sticker, bytes, context);
     return {id: sticker.id, deduped};
   };
 

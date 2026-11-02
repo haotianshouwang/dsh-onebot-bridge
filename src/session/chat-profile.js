@@ -1,3 +1,4 @@
+import {freeMode} from '../core/freedom.js';
 const own=(v,k)=>Object.prototype.hasOwnProperty.call(v,k);
 export function validateProfile(input={}){
  if(!input||typeof input!=='object'||Array.isArray(input))throw Error('聊天设置无效');
@@ -12,7 +13,7 @@ export function validateProfile(input={}){
  const users=input.users??[];if(!Array.isArray(users)||users.length>200||users.some(v=>typeof v!=='string'||!/^\d{4,16}$/.test(v)))throw Error('请选择有效聊天成员');p.users=[...new Set(users)];return p;
 }
 export function chatSettings(store,msg){
- const s={...store.data.settings},p=store.data.chatProfiles?.[msg.key];if(!p)return s;
+ const s={...store.data.settings,freeMode:freeMode(store)},p=store.data.chatProfiles?.[msg.key];if(!p)return s;
  for(const k of ['mergeWindowMs','maxCollectMs','staleAfterSec','decisionEnabled'])if(own(p,k))s[k]=p[k];
  if(p.participation&&p.participation!=='inherit')s.groupReplyMode=p.participation;
  if(p.audience==='all'){s[msg.kind==='group'?'groupAudience':'privateAudience']='all';}

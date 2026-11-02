@@ -1,3 +1,4 @@
+import {freeMode} from './freedom.js';
 import { randomUUID } from 'node:crypto';
 import {isOwner,validateOwners} from './owners.js';
 const qq=/^[1-9]\d{3,15}$/;
@@ -32,7 +33,9 @@ export class Permissions {
   constructor(store){this.store=store;this.boot=randomUUID();this.usage=new Map();}
   issue(msg,mode='agent',plugin='core') {
     if(!['private','group'].includes(msg.kind)||!qq.test(msg.user)||!qq.test(msg.bot)||!qq.test(msg.peer)||!msg.id||msg.key!==msg.bot+':'+msg.kind+':'+msg.peer||msg.kind==='private'&&msg.peer!==msg.user)throw new Error('执行身份不完整');
-    const c=Object.freeze({actor:msg.user,bot:msg.bot,kind:msg.kind,peer:msg.peer,key:msg.key,messageId:msg.id,
+    // traceId 把一次消息处理、工具调用、审计和任务步骤关联起来；同一条 QQ 消息固定同一个值。
+    const traceId=String(msg.traceId||'').slice(0,200)||(msg.key+':'+String(msg.id)).slice(0,200);
+    const c=Object.freeze({actor:msg.user,bot:msg.bot,kind:msg.kind,peer:msg.peer,key:msg.key,messageId:msg.id,traceId,
       generation:this.store.data.framework.generation,boot:this.boot,id:randomUUID(),mode,plugin});
     this.#contexts.add(c);this.#used.set(c,new Set());this.#leases.set(c,{open:true,expires:Date.now()+this.store.data.settings.turnTimeout*1000});return c;
   }
@@ -85,14 +88,14 @@ export class Permissions {
         (!g.expires||Date.parse(g.expires)>Date.now())&&(c.kind==='private'?g.private:g.groups.includes(c.peer)));
       const limit=this.owner(c)?30:Math.min(...grants.map(g=>g.perMinute),30);
       const key=c.actor+':'+c.key+':'+cap.id,now=Date.now(),recent=(this.usage.get(key)||[]).filter(t=>now-t<60000);
-      if(recent.length>=limit)throw new Error('此能力调用过于频繁');
+      if(!freeMode(this.store)&&recent.length>=limit)throw new Error('此能力调用过于频繁');
       recent.push(now);this.usage.set(key,recent);
       if(this.usage.size>2000)this.usage.delete(this.usage.keys().next().value);
     }
   }
-  audit(outcome,cap,c,reason='',riskLevel=''){
+  audit(outcome,cap,c,reason='',riskLevel='',state='',extra={}){
     const rows=this.store.data.framework.audit;
-    rows.push({time:new Date().toISOString(),outcome,capability:cap,riskLevel:String(riskLevel||''),actor:c?.actor||'',kind:c?.kind||'',peer:c?.peer||'',reason:String(reason).slice(0,250)});
+    rows.push({time:new Date().toISOString(),outcome,state:String(state||''),capability:cap,riskLevel:String(riskLevel||''),traceId:String(c?.traceId||'').slice(0,200),actor:c?.actor||'',kind:c?.kind||'',peer:c?.peer||'',errorClass:String(extra.errorClass||''),durationMs:Number.isFinite(extra.durationMs)?extra.durationMs:null,reason:String(reason).slice(0,250)});
     if(rows.length>300)rows.splice(0,rows.length-300);
   }
 }

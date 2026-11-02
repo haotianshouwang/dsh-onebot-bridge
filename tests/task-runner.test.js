@@ -39,7 +39,8 @@ test('任务执行器每次只推进一步，所有计划步骤完成后进入�
   const done = x.tasks.get(task.id);
   assert.equal(done.status, 'verifying');
   assert.equal(done.steps.length, 2);
-  assert.match(done.steps[0].operationKey, /^plan:0:/);
+  // write-ahead 的幂等键包含任务 ID、计划步与尝试次数，便于崩溃恢复时区分新尝试。
+  assert.match(done.steps[0].operationKey, /^exec:task-.+:1:1$/);
   assert.equal(x.calls.length, 2);
 });
 

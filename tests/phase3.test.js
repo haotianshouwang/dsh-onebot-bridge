@@ -91,6 +91,10 @@ test('paragraph splitting preserves lists, code fences, Unicode and the configur
  for(const bad of ['unknown',0])assert.throws(()=>validateSettings({...{...xSettings()},replySplit:bad}),/分条/);
  function xSettings(){return {enabled:true,mode:'forward',url:'ws://127.0.0.1:3001',reverseHost:'127.0.0.1',reversePort:3002,reversePath:'/onebot/v11',allowedUsers:[owner],allowedGroups:[],workspacePath:'F:/test',turnTimeout:180,sendInterval:500,maxReplyChars:1500};}
 });
+test('自然分条会把完整长句拆成自然气泡',()=>{
+ const value='我刚刚看到你的消息了，先把这件事记下来，等你忙完以后再慢慢处理就好。今天不用急着一次把所有事情都做完，晚一点也没关系，先把手头最重要的事情处理完就行。';
+ assert.deepEqual(splitReply(value,'natural',200),['我刚刚看到你的消息了，先把这件事记下来，等你忙完以后再慢慢处理就好。','今天不用急着一次把所有事情都做完，晚一点也没关系，先把手头最重要的事情处理完就行。']);
+});
 test('permission changes between reply parts stop subsequent parts',async t=>{
  const x=await setup(t);x.store.data.settings.replySplit='paragraphs';const msg=message(),c=x.permissions.issue(msg);let count=0;
  x.bot.request=async()=>{count++;invalidate(x.store);return {outcome:'confirmed',data:{message_id:count}};};

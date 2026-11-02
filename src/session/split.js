@@ -8,6 +8,20 @@ export function splitReply(text,mode='natural',size=1500,source=text){
   const structured=/^\s*(?:\x60{3,}|~{3,}|[-*+]\s|\d+[.)、]\s|>|\|)/m.test(String(source))||/^\s*[\[{][\s\S]*[\]}]\s*$/.test(String(source));
   // A short conversation line is a message boundary. Lists and code stay together.
   if(!structured&&count(value)<=360&&lines.length>1&&lines.every(line=>count(line)<=120))return lines.flatMap(line=>chunks(line,size));
+  if(!structured){
+   const sentences=value.match(/[^。！？!?；;]+[。！？!?；;]+|[^。！？!?；;]+$/g)?.map(s=>s.trim()).filter(Boolean)||[];
+   if(sentences.length>1&&count(value)>=60){
+    const grouped=[];let current='';
+    for(const sentence of sentences){
+     const next=current?current+sentence:sentence;
+     if(current&&count(current)<18){current=next;continue;}
+     if(current)grouped.push(current);
+     current=sentence;
+    }
+    if(current)grouped.push(current);
+    if(grouped.length>1)return grouped.flatMap(line=>chunks(line,size));
+   }
+  }
   mode='paragraphs';
  }
  if(mode!=='paragraphs')return chunks(value,mode==='single'?4000:size);

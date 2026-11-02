@@ -387,16 +387,16 @@ export class MemoryStore {
   }
 
   // 当前聊天可见的记录：global + 该用户 + 当前群。
-  visible({ actor = '', group = '' } = {}) {
+  visible({ actor = '', group = '', sharedOwner = '' } = {}) {
     this.assertOpen();
-    const rows = this.db.prepare(`SELECT * FROM memories WHERE scope = 'global' OR (scope = 'user' AND owner = ?) OR (scope = 'group' AND owner = ? AND ? <> '') ORDER BY updated_at DESC LIMIT 5000`).all(String(actor || ''), String(group || ''), String(group || ''));
+    const rows = this.db.prepare(`SELECT * FROM memories WHERE scope = 'global' OR (scope = 'user' AND (owner = ? OR (owner = ? AND kind IN ('fact', 'preference')))) OR (scope = 'group' AND owner = ? AND ? <> '') ORDER BY updated_at DESC LIMIT 5000`).all(String(actor || ''), String(sharedOwner || ''), String(group || ''), String(group || ''));
     return rows.map(value => { const row = this.row(value); row.embedding = toVector(value.embedding); return row; });
   }
 
-  recall({ actor = '', group = '', query = '', vector = null, model = '', limit = 6, now = Date.now() } = {}) {
+  recall({ actor = '', group = '', sharedOwner = '', query = '', vector = null, model = '', limit = 6, now = Date.now() } = {}) {
     this.assertOpen();
     const scored = [];
-    for (const row of this.visible({ actor, group })) {
+    for (const row of this.visible({ actor, group, sharedOwner })) {
       const hit = scoreMemory(row, { vector, model, query, now });
       if (hit) scored.push({ ...row, score: Math.round(hit.score * 1000) / 1000, cos: hit.cos === null ? null : Math.round(hit.cos * 1000) / 1000 });
     }

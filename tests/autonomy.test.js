@@ -17,7 +17,7 @@ async function setup(t,{at,onLearned}={}){
  const sdk=new PluginSDK({store,permissions,events,media,actions});
  let clock={now:at??Date.now()};
  const calls=[];
- const native={autonomy:async plan=>{calls.push(plan);const tools=(plan.allow||[]).map(capability=>({capability,ok:true,outcome:capability==='plugin.qq-qzone.publish'?'confirmed':null,summary:{id:'tool-1',resultCount:1,textChars:10,itemCount:1,scope:capability==='plugin.qq-memory.remember'?'group':undefined}}));return {text:'做完了，今天有点累。',tools};}};
+ const native={autonomy:async plan=>{calls.push(plan);const tools=(plan.allow||[]).map(capability=>({capability,ok:true,outcome:capability==='plugin.qq-qzone.publish'?'confirmed':null,state:capability==='plugin.qq-qzone.publish'?'submitted':'confirmed',verified:capability!=='plugin.qq-qzone.publish',summary:{id:'tool-1',resultCount:1,textChars:10,itemCount:1,scope:capability==='plugin.qq-memory.remember'?'group':undefined}}));return {text:'做完了，今天有点累。',tools};}};
  const auto=await activateAutonomy(sdk.facade(),{dir:path.join(dir,'auto'),native,persona:()=>'你是测试人设。',online:()=>true,now:()=>clock.now,onLearned});
  const item=store.data.framework.nativePackages['qq-autonomy'];
  item.enabled=true;item.scope={private:true,allUsers:false,users:[owner],groups:[group]};
@@ -222,7 +222,8 @@ test('翻空间只使用配置的目标，发空间和评论能被单独打开',
  assert.deepEqual(x.calls[0].allow,['plugin.qq-qzone.list','plugin.qq-qzone.comment']);
  x.item.config.browseEnabled=false;x.item.config.qzonePostEnabled=true;x.auto.store.state.counts={};
  const post=await x.auto.tick(at,{force:'qzone'});
- assert.equal(post.ok,true);
+ assert.equal(post.ok,false);
+ assert.match(post.error,/尚未回读确认/);
  assert.deepEqual(x.calls[1].allow,['plugin.qq-qzone.publish']);
 });
 

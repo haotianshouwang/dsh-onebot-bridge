@@ -1,17 +1,8 @@
-// 长期记忆星图：Canvas 2D 伪 3D 渲染。
-//
-// 这里不引入 Three.js/WebGL 依赖：当前节点规模（后台最多 120 个）用 2D Canvas
-// 做透视投影、景深、粒子、动态连线已经足够，且更容易在低性能设备和严格 CSP 下稳定运行。
-// 每个视觉属性都有数据含义：大小=重要度，颜色=范围，亮度=最近更新，连线=共享标签/向量相似度。
-const PALETTE = {
-  global: '#e8b878',
-  user: '#8fb8c9',
-  group: '#94c9a6',
-  text: '#f2ede3',
-  muted: '#a49d90',
-  line: 'rgba(242,237,227,0.16)',
-  warm: 'rgba(232,184,120,0.12)'
-};
+import * as THREE from './three.module.js';
+
+// 记忆星云：真实 Three.js 场景。节点和边完全来自 memoryAdmin.graph；
+// 这个模块只负责空间布局、交互和渲染，不创建或修改任何记忆。
+const SCOPE_COLORS = {global: '#d9a85d', user: '#75a9c6', group: '#79b995'};
 
 function hashText(value) {
   let hash = 2166136261;
@@ -26,256 +17,187 @@ function seeded(value) {
   return (hashText(value) % 10000) / 10000;
 }
 
+function cssColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function colorFor(scope) {
+  return cssColor(scope === 'global' ? '--accent' : scope === 'group' ? '--ok' : '--accent-2', SCOPE_COLORS[scope] || SCOPE_COLORS.user);
+}
+
+function makePosition(node, index, count) {
+  const scope = node.scope || 'user';
+  const radius = scope === 'global' ? 85 : scope === 'group' ? 205 : 145;
+  const angle = (index / Math.max(1, count)) * Math.PI * 2 + seeded(node.id + ':angle') * 0.8;
+  const vertical = (seeded(node.id + ':height') - 0.5) * (scope === 'global' ? 55 : 145);
+  const jitter = 0.78 + seeded(node.id + ':radius') * 0.42;
+  return new THREE.Vector3(Math.cos(angle) * radius * jitter, vertical, Math.sin(angle) * radius * jitter);
+}
+
+function fallback(canvas, tooltip) {
+  const context = canvas.getContext('2d');
+  if (!context) return {destroy() {}, focus() {return false;}, search() {return 0;}, setScope() {}, reset() {}, togglePause() {return true;}, isPaused() {return true;}, select() {}};
+  const draw = () => {
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(320, Math.round(rect.width));
+    const height = Math.max(360, Math.round(rect.height || 480));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.fillStyle = '#0c0d12';
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = '#9da5b5';
+    context.font = '13px system-ui, sans-serif';
+    context.textAlign = 'center';
+    context.fillText('当前浏览器不支持 WebGL，星云暂时无法显示。', width / 2, height / 2 - 8);
+    context.fillStyle = '#6f7788';
+    context.font = '11px system-ui, sans-serif';
+    context.fillText('记忆数据仍可在“记忆库”和“复习曲线”中查看。', width / 2, height / 2 + 18);
+    if (tooltip) tooltip.hidden = true;
+  };
+  draw();
+  return {destroy() {}, focus() {return false;}, search() {return 0;}, setScope() {}, reset() {draw();}, togglePause() {return true;}, isPaused() {return true;}, select() {}};
+}
+
 export function createStarMap({canvas, tooltip, panel, nodes = [], edges = [], onSelect, onClosePanel}) {
   if (!(canvas instanceof HTMLCanvasElement)) throw new Error('星图缺少 canvas');
-  const ctx = canvas.getContext('2d');
-  const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const state = {
-    yaw: 0.35, pitch: 0.18, zoom: 1, targetZoom: 1,
-    paused: reducedMotion, dragging: false, moved: false, lastX: 0, lastY: 0,
-    selected: null, hover: null, scope: '', query: '',
-    width: 0, height: 0, dpr: 1, raf: 0, start: performance.now(), lastPaint: 0,
-    disposed: false, stars: [], layout: new Map()
-  };
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: true, powerPreference: 'low-power'});
+  } catch {
+    return fallback(canvas, tooltip);
+  }
+
+  const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches === true;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 1, 1600);
+  camera.position.set(0, 18, 650);
+  const root = new THREE.Group();
+  const nodeGroup = new THREE.Group();
+  const edgeGroup = new THREE.Group();
+  root.add(edgeGroup, nodeGroup);
+  scene.add(root);
+
   const listeners = [];
-  const pristine = nodes.map(node => ({...node}));
+  const state = {paused: reducedMotion, disposed: false, selected: null, hover: null, scope: '', query: '', dragging: false, moved: false, lastX: 0, lastY: 0, yaw: 0.25, pitch: -0.1, targetZoom: 650, currentZoom: 650, raf: 0, materials: new Map(), meshes: new Map()};
+  const on = (target, type, handler, options) => {target.addEventListener(type, handler, options);listeners.push(() => target.removeEventListener(type, handler, options));};
+  const positionById = new Map();
+  const scopeGroups = {global: [], user: [], group: []};
+  for (const node of nodes) (scopeGroups[node.scope] || scopeGroups.user).push(node);
+  for (const [scope, group] of Object.entries(scopeGroups)) group.forEach((node, index) => positionById.set(node.id, makePosition(node, index, group.length)));
 
-  function on(target, type, handler, options) {
-    target.addEventListener(type, handler, options);
-    listeners.push(() => target.removeEventListener(type, handler, options));
+  const sphere = new THREE.SphereGeometry(1, 12, 8);
+  for (const node of nodes) {
+    const material = new THREE.MeshBasicMaterial({color: new THREE.Color(colorFor(node.scope)), transparent: true, opacity: 0.92});
+    const mesh = new THREE.Mesh(sphere, material);
+    const importance = Math.max(1, Math.min(5, Number(node.importance) || 3));
+    const scale = 2.4 + importance * 1.2;
+    mesh.scale.setScalar(scale);
+    mesh.position.copy(positionById.get(node.id));
+    mesh.userData.node = node;
+    mesh.userData.baseScale = scale;
+    nodeGroup.add(mesh);
+    state.materials.set(node.id, material);
+    state.meshes.set(node.id, mesh);
   }
 
-  function buildLayout() {
-    state.layout.clear();
-    const byScope = {global: [], user: [], group: []};
-    for (const node of nodes) (byScope[node.scope] || byScope.user).push(node);
-    const rings = {global: 0.38, user: 0.66, group: 0.92};
-    for (const [scope, group] of Object.entries(byScope)) {
-      group.forEach((node, index) => {
-        const seedA = seeded(node.id + ':a');
-        const seedB = seeded(node.id + ':b');
-        const seedC = seeded(node.id + ':c');
-        const angle = (index / Math.max(1, group.length)) * Math.PI * 2 + seedA * 0.7;
-        const radius = rings[scope] * (0.72 + seedB * 0.34);
-        state.layout.set(node.id, {
-          x: Math.cos(angle) * radius * 420,
-          y: (seedC - 0.5) * 360 + Math.sin(angle) * 50,
-          z: Math.sin(angle) * radius * 420,
-          phase: seedA * Math.PI * 2
-        });
-      });
-    }
-    state.stars = Array.from({length: 260}, (_, index) => ({
-      x: seeded('star-x-' + index) * 2 - 1,
-      y: seeded('star-y-' + index) * 2 - 1,
-      z: seeded('star-z-' + index),
-      size: 0.4 + seeded('star-s-' + index) * 1.5,
-      phase: seeded('star-p-' + index) * Math.PI * 2
-    }));
+  const edgePositions = [];
+  for (const edge of edges) {
+    const source = positionById.get(edge.source);
+    const target = positionById.get(edge.target);
+    if (!source || !target) continue;
+    edgePositions.push(source.x, source.y, source.z, target.x, target.y, target.z);
   }
+  const edgeGeometry = new THREE.BufferGeometry();
+  edgeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3));
+  const edgeMaterial = new THREE.LineBasicMaterial({color: new THREE.Color('#9aa5bd'), transparent: true, opacity: 0.24});
+  edgeGroup.add(new THREE.LineSegments(edgeGeometry, edgeMaterial));
 
-  function resize() {
-    const rect = canvas.getBoundingClientRect();
-    state.dpr = Math.min(2, window.devicePixelRatio || 1);
-    state.width = Math.max(320, Math.round(rect.width));
-    state.height = Math.max(360, Math.round(rect.height || 480));
-    canvas.width = Math.round(state.width * state.dpr);
-    canvas.height = Math.round(state.height * state.dpr);
-    ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+  const starPositions = [];
+  for (let index = 0; index < 480; index++) {
+    const radius = 340 + seeded('nebula-radius-' + index) * 430;
+    const theta = seeded('nebula-theta-' + index) * Math.PI * 2;
+    const y = (seeded('nebula-y-' + index) - 0.5) * 300;
+    starPositions.push(Math.cos(theta) * radius, y, Math.sin(theta) * radius);
   }
-
-  function project(point, time) {
-    const cosY = Math.cos(state.yaw), sinY = Math.sin(state.yaw);
-    const cosP = Math.cos(state.pitch), sinP = Math.sin(state.pitch);
-    const floatY = state.paused ? 0 : Math.sin(time / 4200 + point.phase) * 7;
-    const x1 = point.x * cosY - point.z * sinY;
-    const z1 = point.x * sinY + point.z * cosY;
-    const y1 = point.y * cosP - z1 * sinP + floatY;
-    const z2 = point.y * sinP + z1 * cosP;
-    const distance = 1100;
-    const scale = (state.zoom * distance) / Math.max(220, distance + z2);
-    return {x: state.width / 2 + x1 * scale, y: state.height / 2 + y1 * scale, depth: z2, scale};
-  }
+  const starGeometry = new THREE.BufferGeometry();
+  starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
+  const starMaterial = new THREE.PointsMaterial({color: new THREE.Color('#b7c2dc'), size: 1.8, transparent: true, opacity: 0.24, depthWrite: false, blending: THREE.AdditiveBlending});
+  const stars = new THREE.Points(starGeometry, starMaterial);
+  scene.add(stars);
 
   function visible(node) {
     if (state.scope && node.scope !== state.scope) return false;
     if (!state.query) return true;
-    const text = state.query.toLowerCase();
-    return String(node.label || '').toLowerCase().includes(text) || (node.tags || []).some(tag => String(tag).toLowerCase().includes(text));
+    const query = state.query.toLowerCase();
+    return String(node.label || '').toLowerCase().includes(query) || (node.tags || []).some(tag => String(tag).toLowerCase().includes(query));
   }
 
-  function drawBackground(time) {
-    const gradient = ctx.createRadialGradient(state.width * 0.5, state.height * 0.38, 20, state.width * 0.5, state.height * 0.48, Math.max(state.width, state.height) * 0.72);
-    gradient.addColorStop(0, '#141419');
-    gradient.addColorStop(0.55, '#0b0b0f');
-    gradient.addColorStop(1, '#050507');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, state.width, state.height);
-    for (const star of state.stars) {
-      const twinkle = state.paused ? 0.55 : 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(time / 1700 + star.phase));
-      const x = (star.x * 0.5 + 0.5) * state.width;
-      const y = (star.y * 0.5 + 0.5) * state.height;
-      ctx.globalAlpha = (0.18 + star.z * 0.5) * twinkle;
-      ctx.fillStyle = star.z > 0.7 ? '#e8b878' : '#f2ede3';
-      ctx.beginPath();
-      ctx.arc(x, y, star.size, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  function drawEdges(time) {
-    const linked = new Set();
-    if (state.selected) for (const edge of edges) {
-      if (edge.source === state.selected || edge.target === state.selected) linked.add(edge.source === state.selected ? edge.target : edge.source);
-    }
-    for (const edge of edges) {
-      const a = nodes.find(node => node.id === edge.source);
-      const b = nodes.find(node => node.id === edge.target);
-      if (!a || !b || !visible(a) || !visible(b)) continue;
-      const pa = state.layout.get(a.id), pb = state.layout.get(b.id);
-      if (!pa || !pb) continue;
-      const p1 = project(pa, time), p2 = project(pb, time);
-      const related = !state.selected || edge.source === state.selected || edge.target === state.selected;
-      const alpha = (related ? 0.7 : 0.12) * Math.max(0.15, 1 - (p1.depth + p2.depth + 900) / 2400);
-      ctx.strokeStyle = edge.kind === 'similarity' ? `rgba(143,184,201,${alpha})` : `rgba(232,184,120,${alpha})`;
-      ctx.lineWidth = 0.6 + Math.min(1.8, (edge.weight || 0.5) * 1.6);
-      ctx.setLineDash(edge.kind === 'similarity' ? [3, 5] : []);
-      ctx.beginPath();
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
-      ctx.stroke();
-      if (!state.paused && related && edge.weight > 0.7) {
-        const t = ((time / 5200) + seeded(edge.source + edge.target)) % 1;
-        const x = p1.x + (p2.x - p1.x) * t;
-        const y = p1.y + (p2.y - p1.y) * t;
-        ctx.setLineDash([]);
-        ctx.fillStyle = 'rgba(232,184,120,0.8)';
-        ctx.beginPath();
-        ctx.arc(x, y, 1.7, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    ctx.setLineDash([]);
-  }
-
-  function drawNodes(time) {
-    const now = Date.now();
-    const related = new Set(state.selected ? [state.selected] : []);
-    if (state.selected) for (const edge of edges) {
-      if (edge.source === state.selected) related.add(edge.target);
-      if (edge.target === state.selected) related.add(edge.source);
-    }
-    const ordered = nodes.filter(visible).slice().sort((a, b) => (state.layout.get(a.id)?.z || 0) - (state.layout.get(b.id)?.z || 0));
-    for (const node of ordered) {
-      const point = state.layout.get(node.id);
-      if (!point) continue;
-      const p = project(point, time);
-      if (p.x < -80 || p.x > state.width + 80 || p.y < -80 || p.y > state.height + 80) continue;
-      const importance = Math.max(1, Math.min(5, Number(node.importance) || 3));
-      const radius = (3.2 + importance * 1.7) * Math.max(0.55, Math.min(1.8, p.scale));
-      const isSelected = state.selected === node.id;
-      const isHover = state.hover === node.id;
-      const linked = !state.selected || related.has(node.id);
-      const freshness = node.updatedAt ? Math.max(0.35, Math.min(1, 1 - (now - new Date(node.updatedAt).getTime()) / (90 * 86400000))) : 0.6;
-      const color = PALETTE[node.scope] || PALETTE.user;
-      ctx.globalAlpha = linked ? 0.55 + freshness * 0.45 : 0.16;
-      const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * (isSelected ? 6 : 3.2));
-      glow.addColorStop(0, color + (isSelected ? '88' : '44'));
-      glow.addColorStop(1, color + '00');
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius * (isSelected ? 6 : 3.2), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = isSelected || isHover ? '#f8f3ea' : 'rgba(255,255,255,0.35)';
-      ctx.lineWidth = isSelected ? 2 : 1;
-      ctx.stroke();
-      if (state.query && !isSelected) {
-        ctx.strokeStyle = 'rgba(232,184,120,0.55)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, radius + 4, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      if (isSelected) {
-        const pulse = state.paused ? 1 : 0.7 + 0.3 * Math.sin(time / 300);
-        ctx.strokeStyle = `rgba(232,184,120,${0.4 * pulse})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, radius + 10 + 4 * pulse, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      if (p.depth < 330 || isSelected || isHover) {
-        ctx.globalAlpha = linked ? 0.9 : 0.3;
-        ctx.fillStyle = PALETTE.text;
-        ctx.font = '10px "Microsoft YaHei", system-ui, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        const label = String(node.label || '').slice(0, 18);
-        ctx.fillText(label, p.x + radius + 5, p.y);
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  function draw() {
-    if (state.disposed) return;
-    const now = performance.now();
-    const time = now - state.start;
-    // 暂停时只以约 5fps 重绘静态场景，避免“暂停”仍持续满帧占用 CPU。
-    if (state.paused && !state.dragging && now - state.lastPaint < 200) {
-      state.raf = requestAnimationFrame(draw);
-      return;
-    }
-    state.lastPaint = now;
-    if (!state.paused && !state.dragging) {
-      state.yaw += 0.00022;
-      state.zoom += (state.targetZoom - state.zoom) * 0.08;
-    } else {
-      state.zoom += (state.targetZoom - state.zoom) * 0.12;
-    }
-    drawBackground(time);
-    drawEdges(time);
-    drawNodes(time);
-    if (state.hover && tooltip) {
-      const node = nodes.find(item => item.id === state.hover);
-      if (node) {
-        tooltip.hidden = false;
-        tooltip.textContent = `${node.label || '记忆'} · ${node.scope} · 重要度 ${node.importance}`;
-      }
-    } else if (tooltip) tooltip.hidden = true;
-    state.raf = requestAnimationFrame(draw);
-  }
-
-  function nodeAt(clientX, clientY) {
-    const rect = canvas.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-    let best = null;
+  function refreshVisibility() {
     for (const node of nodes) {
-      if (!visible(node)) continue;
-      const point = state.layout.get(node.id);
-      if (!point) continue;
-      const p = project(point, performance.now() - state.start);
-      const radius = 9 + Number(node.importance || 3) * 1.8;
-      const distance = Math.hypot(p.x - x, p.y - y);
-      if (distance <= radius && (!best || p.depth < best.depth)) best = {node, depth: p.depth};
+      const mesh = state.meshes.get(node.id);
+      const material = state.materials.get(node.id);
+      if (!mesh || !material) continue;
+      const shown = visible(node);
+      const connected = !state.selected || state.selected === node.id || edges.some(edge => (edge.source === state.selected && edge.target === node.id) || (edge.target === state.selected && edge.source === node.id));
+      mesh.visible = shown;
+      material.opacity = shown ? (connected ? 0.92 : 0.2) : 0;
+      mesh.scale.setScalar(mesh.userData.baseScale * (state.selected === node.id ? 1.75 : 1));
     }
-    return best?.node || null;
+  }
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(320, rect.width || 640);
+    const height = Math.max(360, rect.height || 540);
+    renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1));
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  }
+
+  function render() {
+    if (state.disposed) return;
+    if (!state.paused && !state.dragging) {
+      state.yaw += 0.00024;
+      stars.rotation.y += 0.00008;
+    }
+    state.currentZoom += (state.targetZoom - state.currentZoom) * 0.08;
+    root.rotation.y = state.yaw;
+    root.rotation.x = state.pitch;
+    camera.position.z = state.currentZoom;
+    camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
+    const node = state.hover ? nodes.find(item => item.id === state.hover) : null;
+    if (tooltip) {
+      tooltip.hidden = !node;
+      if (node) tooltip.textContent = `${node.label || '记忆'} · ${node.scope} · 重要度 ${node.importance}`;
+    }
+    state.raf = requestAnimationFrame(render);
+  }
+
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  function nodeAt(event) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects([...state.meshes.values()].filter(mesh => mesh.visible), false);
+    return hits[0]?.object?.userData?.node || null;
   }
 
   function selectNode(node, focus = false) {
     state.selected = node?.id || null;
+    refreshVisibility();
     if (node) {
-      if (focus) state.targetZoom = Math.max(1.5, state.targetZoom);
-      if (typeof onSelect === 'function') onSelect(node);
+      if (focus) state.targetZoom = 360;
+      onSelect?.(node);
     } else {
       if (panel) panel.hidden = true;
-      if (typeof onClosePanel === 'function') onClosePanel();
+      onClosePanel?.();
     }
   }
 
@@ -283,39 +205,19 @@ export function createStarMap({canvas, tooltip, panel, nodes = [], edges = [], o
     const node = nodes.find(item => item.id === id);
     if (!node) return false;
     state.scope = '';
-    state.targetZoom = 1.85;
-    const point = state.layout.get(id);
+    state.targetZoom = 360;
+    const point = positionById.get(id);
     if (point) state.yaw = -Math.atan2(point.x, point.z || 1) + 0.2;
     selectNode(node, true);
     return true;
   }
 
-  function search(query) {
-    state.query = String(query || '').trim().slice(0, 80);
-    if (!state.query) return 0;
-    const matches = nodes.filter(visible);
-    if (matches[0]) focusOn(matches[0].id);
-    return matches.length;
-  }
-
-  function setScope(scope) {
-    state.scope = ['global', 'user', 'group'].includes(scope) ? scope : '';
-    state.selected = null;
-    state.query = '';
-    state.targetZoom = 1;
-    if (panel) panel.hidden = true;
-  }
-
-  function reset() {
-    state.yaw = 0.35; state.pitch = 0.18; state.zoom = 1; state.targetZoom = 1;
-    state.selected = null; state.query = ''; state.scope = '';
-    if (panel) panel.hidden = true;
-  }
-
   function pointerDown(event) {
     if (event.button !== 0) return;
-    state.dragging = true; state.moved = false;
-    state.lastX = event.clientX; state.lastY = event.clientY;
+    state.dragging = true;
+    state.moved = false;
+    state.lastX = event.clientX;
+    state.lastY = event.clientY;
     canvas.setPointerCapture?.(event.pointerId);
   }
 
@@ -325,37 +227,31 @@ export function createStarMap({canvas, tooltip, panel, nodes = [], edges = [], o
       const dy = event.clientY - state.lastY;
       if (Math.abs(dx) + Math.abs(dy) > 2) state.moved = true;
       state.yaw += dx * 0.006;
-      state.pitch = Math.max(-0.9, Math.min(0.9, state.pitch + dy * 0.004));
-      state.lastX = event.clientX; state.lastY = event.clientY;
+      state.pitch = Math.max(-0.95, Math.min(0.95, state.pitch + dy * 0.004));
+      state.lastX = event.clientX;
+      state.lastY = event.clientY;
       return;
     }
-    state.hover = nodeAt(event.clientX, event.clientY)?.id || null;
-    canvas.style.cursor = state.hover ? 'pointer' : 'grab';
+    const node = nodeAt(event);
+    state.hover = node?.id || null;
+    canvas.style.cursor = node ? 'pointer' : 'grab';
   }
 
   function pointerUp(event) {
     if (!state.dragging) return;
     state.dragging = false;
     canvas.releasePointerCapture?.(event.pointerId);
-    if (!state.moved) {
-      const node = nodeAt(event.clientX, event.clientY);
-      selectNode(node);
-    }
+    if (!state.moved) selectNode(nodeAt(event));
   }
 
   function wheel(event) {
     event.preventDefault();
-    state.targetZoom = Math.max(0.55, Math.min(3.2, state.targetZoom + (event.deltaY < 0 ? 0.16 : -0.16)));
-  }
-
-  function doubleClick(event) {
-    const node = nodeAt(event.clientX, event.clientY);
-    if (node) focusOn(node.id);
+    state.targetZoom = Math.max(280, Math.min(900, state.targetZoom + (event.deltaY < 0 ? -45 : 45)));
   }
 
   function keydown(event) {
-    if (event.key === 'Escape') { reset(); if (panel) panel.hidden = true; }
-    if (event.key === ' ') { event.preventDefault(); togglePause(); }
+    if (event.key === 'Escape') selectNode(null);
+    if (event.key === ' ') { event.preventDefault(); state.paused = !state.paused; }
   }
 
   function togglePause() {
@@ -363,20 +259,52 @@ export function createStarMap({canvas, tooltip, panel, nodes = [], edges = [], o
     return state.paused;
   }
 
-  buildLayout();
-  resize();
-  on(window, 'resize', resize);
+  function search(query) {
+    state.query = String(query || '').trim().slice(0, 80);
+    refreshVisibility();
+    const matches = nodes.filter(visible);
+    if (matches[0]) focusOn(matches[0].id);
+    return matches.length;
+  }
+
+  function setScope(scope) {
+    state.scope = ['global', 'user', 'group'].includes(scope) ? scope : '';
+    state.selected = null;
+    state.query = '';
+    state.targetZoom = 650;
+    refreshVisibility();
+    if (panel) panel.hidden = true;
+  }
+
+  function reset() {
+    state.yaw = 0.25;
+    state.pitch = -0.1;
+    state.targetZoom = 650;
+    state.selected = null;
+    state.query = '';
+    state.scope = '';
+    refreshVisibility();
+    if (panel) panel.hidden = true;
+  }
+
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(resize) : null;
   observer?.observe(canvas);
+  on(window, 'resize', resize);
   on(canvas, 'pointerdown', pointerDown);
   on(canvas, 'pointermove', pointerMove);
   on(canvas, 'pointerup', pointerUp);
   on(canvas, 'pointerleave', () => { state.hover = null; state.dragging = false; });
+  on(canvas, 'dblclick', event => {
+    const node = nodeAt(event);
+    if (node) selectNode(node, true);
+  });
   on(canvas, 'wheel', wheel, {passive: false});
-  on(canvas, 'dblclick', doubleClick);
   on(canvas, 'keydown', keydown);
   canvas.tabIndex = 0;
-  state.raf = requestAnimationFrame(draw);
+  canvas.style.touchAction = 'none';
+  refreshVisibility();
+  resize();
+  state.raf = requestAnimationFrame(render);
 
   return {
     destroy() {
@@ -384,7 +312,16 @@ export function createStarMap({canvas, tooltip, panel, nodes = [], edges = [], o
       cancelAnimationFrame(state.raf);
       observer?.disconnect();
       for (const remove of listeners) remove();
-      state.layout.clear();
+      sphere.dispose();
+      edgeGeometry.dispose();
+      edgeMaterial.dispose();
+      starGeometry.dispose();
+      starMaterial.dispose();
+      for (const material of state.materials.values()) material.dispose();
+      renderer.dispose();
+      renderer.forceContextLoss?.();
+      state.meshes.clear();
+      state.materials.clear();
     },
     focus: focusOn,
     search,

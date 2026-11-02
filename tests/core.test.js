@@ -16,6 +16,8 @@ import {Media,publicIP,safeDownload} from '../src/core/media.js';
 import {Builtins} from '../src/builtins/index.js';
 import {OneBot,normalize,normalizeEvent,segments,allowed,chunks} from '../src/onebot/index.js';
 import {Router} from '../src/session/router.js';
+import {TaskStore} from '../src/session/tasks.js';
+import {ReminderScheduler} from '../src/session/reminders.js';
 import {NativeDSH,SAFE_PRESET} from '../src/session/native.js';
 import {Extensions,validateManifest} from '../src/extensions/index.js';
 import {Market,unpack} from '../src/market/index.js';
@@ -32,6 +34,138 @@ async function setup(t){
  actions.attach(bot);
  return {store,permissions,events,media,actions,builtins,extensions,bot,sent};
 }
+
+test('主人相对提醒直接落库并由调度器发送，模型不能口头承诺代替创建',async t=>{
+ const x=await setup(t),tasks=await new TaskStore(path.join(x.store.dir,'tasks')).open();
+ x.actions.installTaskActions(tasks);x.store.data.framework.enabledActions.push('qq.task.create','qq.message.send');
+ const router=new Router(x.store,{run:async()=>{throw Error('明确提醒不应交给模型猜测');},stop:async()=>{}},x.extensions,log,x);router.attach(x.bot);
+ await router.receive(message({text:'一分钟后给我发个信息'}));await Promise.all([...router.queues.values()]);
+ assert.equal(tasks.tasks.length,1);assert.equal(tasks.tasks[0].reminder.peer,'10000001');
+ const job=x.store.data.inbox.at(-1);assert.equal(job.status,'done');assert.equal(job.reminderTaskId,tasks.tasks[0].id);assert.match(job.reply,/记好了/);
+ const scheduler=new ReminderScheduler({tasks,now:()=>tasks.tasks[0].reminder.dueAt,available:()=>true,guard:()=>'',send:async r=>{
+  const msg=message({id:'reminder-test'}),c=x.permissions.issue(msg,'proactive');
+  try{return await x.actions.invoke('qq.message.send',{segments:[{type:'text',data:{text:r.text}}]},c);}finally{x.permissions.close(c);}
+ }});
+ await scheduler.tick();await scheduler.tick();
+ assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,2);
+ assert.equal(tasks.tasks[0].status,'done');assert.equal(tasks.tasks[0].reminder.state,'submitted');
+});
+
+test('提醒动作校验未来日期和时区，只能绑定当前主人当前聊天，重复调用不重复建任务',async t=>{
+ const x=await setup(t),tasks=await new TaskStore(path.join(x.store.dir,'tasks')).open();
+ x.actions.installTaskActions(tasks);x.store.data.framework.enabledActions.push('qq.task.create');
+ const c=x.permissions.issue(message(),'chat');
+ await assert.rejects(x.actions.invoke('qq.task.create',{goal:'提醒',remindAt:'2026-11-01T19:00:00'},c),/时区/);
+ await assert.rejects(x.actions.invoke('qq.task.create',{goal:'提醒',delaySeconds:60,remindAt:'2026-11-01T19:00:00+08:00'},c),/其中一个/);
+ await assert.rejects(x.actions.invoke('qq.task.create',{goal:'提醒',delaySeconds:60,peer:'123456'},c),/不支持的参数/);
+ const at=new Date(Date.now()+60000).toISOString();
+ const first=await x.actions.invoke('qq.task.create',{goal:'提醒',remindAt:at,reminderText:'喝水'},c);
+ const second=await x.actions.invoke('qq.task.create',{goal:'提醒',delaySeconds:60,reminderText:'喝水'},c);
+ assert.equal(first.id,second.id);assert.equal(first.reminder.actor,c.actor);assert.equal(first.reminder.sourceMessageId,c.messageId);
+ x.store.data.framework.listenUsers.push('123456');
+ const other=x.permissions.issue(message({user:'123456',peer:'123456',key:'10000002:private:123456'}),'chat');
+ await assert.rejects(x.actions.invoke('qq.task.create',{goal:'提醒',delaySeconds:60},other),/仅主人/);
+});
+
+test('自主图片表情单独发送，文字和图片各有回执，配置撤销后不附图',async t=>{
+ const x=await setup(t),native={stop:async()=>{}},router=new Router(x.store,native,x.extensions,log,x);router.attach(x.bot);
+ let used=0,valid=true;
+ router.replySticker=async()=>({part:{type:'image',data:{file:'base64://real'}},valid:()=>valid,sent:async outcome=>{used++;assert.ok(outcome.state);}});
+ const msg=message(),c=x.permissions.issue(msg,'chat');
+ const job={mode:'chat'};await router.send(msg,'你好',job,c);
+ const sends=x.sent.filter(row=>row.action==='send_private_msg');assert.equal(sends.length,2);
+ assert.deepEqual(sends[0].params.message.map(part=>part.type),['text']);assert.deepEqual(sends[1].params.message.map(part=>part.type),['image']);assert.equal(used,1);
+ assert.equal(job.replyState,'submitted');assert.equal(job.stickerState,'submitted');assert.notEqual(job.replyMessageId,job.stickerMessageId);
+ valid=false;const next=message({id:'2'});await router.send(next,'继续',{mode:'chat'},x.permissions.issue(next,'chat'));
+ assert.equal(x.sent.filter(row=>row.action==='send_private_msg').at(-1).params.message.some(part=>part.type==='image'),false);assert.equal(used,1);
+});
+
+test('按选图结果先发独立图片再发文字，QQ 小表情也不拼进文字末尾',async t=>{
+ const x=await setup(t),router=new Router(x.store,{stop:async()=>{}},x.extensions,log,x);router.attach(x.bot);
+ x.store.data.settings.sendInterval=0;
+ router.replySticker=async()=>({placement:'before',part:{type:'image',data:{file:'base64://real'}},valid:()=>true,sent:async()=>{}});
+ const first=message();await router.send(first,'好开心',{mode:'chat'},x.permissions.issue(first,'chat'));
+ assert.deepEqual(x.sent.filter(row=>row.action==='send_private_msg').map(row=>row.params.message.map(part=>part.type)),[['image'],['text']]);
+ router.replySticker=async()=>({part:{type:'face',data:{id:'13'}},valid:()=>true,sent:async()=>{}});
+ const second=message({id:'second'});await router.send(second,'继续',{mode:'chat'},x.permissions.issue(second,'chat'));
+ assert.deepEqual(x.sent.filter(row=>row.action==='send_private_msg').slice(-2).map(row=>row.params.message.map(part=>part.type)),[['text'],['face']]);
+});
+
+test('工具发过的相同文字不重发，新的最终说明实际发送并保存真实消息记录',async t=>{
+ const x=await setup(t),router=new Router(x.store,{stop:async()=>{}},x.extensions,log,x);router.attach(x.bot);
+ x.store.data.settings.sendInterval=0;
+ const msg=message(),c=x.permissions.issue(msg,'chat');
+ await x.actions.request('send_private_msg',{user_id:Number(msg.peer),message:[{type:'text',data:{text:'我试试这个'}}]},c);
+ const job={mode:'chat'};
+ await router.send(msg,'这是实际的后续说明',job,c);
+ assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,2);
+ assert.match(job.actualReply,/我试试这个/);
+ assert.match(job.actualReply,/实际的后续说明/);
+ assert.equal(job.actualMessages.length,2);
+ assert.equal(x.actions.unsentText(c,'我试试这个'),'');
+});
+
+test('发送结果未知也保留真实尝试记录，不能让最终草稿覆盖或重复发送', async t => {
+ const x=await setup(t),msg=message(),context=x.permissions.issue(msg,'chat');
+ x.bot.request=async()=>{throw Object.assign(Error('timeout'),{code:'UNKNOWN_OUTCOME'});};
+ await assert.rejects(x.actions.request('send_private_msg',{user_id:Number(msg.peer),message:[{type:'text',data:{text:'已经尝试发送的正文'}}]},context),/timeout/);
+ assert.deepEqual(x.actions.sentMessages(context),[{state:'unknown',messageId:null,text:'已经尝试发送的正文',types:['text']}]);
+ assert.equal(x.actions.unsentText(context,'已经尝试发送的正文'),'');
+});
+
+test('分开发图遵守本轮条数；图片结果未知时保留文字且不重发',async t=>{
+ const x=await setup(t),router=new Router(x.store,{stop:async()=>{}},x.extensions,log,x);router.attach(x.bot);
+ x.store.data.settings.sendInterval=0;x.store.data.settings.replyMaxParts=1;
+ let used=0;router.replySticker=async()=>({part:{type:'image',data:{file:'base64://real'}},valid:()=>true,sent:async()=>used++});
+ const first=message();await router.send(first,'文字',{mode:'chat'},x.permissions.issue(first,'chat'));
+ assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,1);assert.equal(used,0);
+ x.store.data.settings.replyMaxParts=2;
+ const original=x.bot.request;x.bot.request=async(action,params)=>{
+  if(params.message?.some(part=>part.type==='image'))throw Object.assign(Error('timeout'),{code:'UNKNOWN_OUTCOME'});
+  return original(action,params);
+ };
+ const second=message({id:'2'}),job={mode:'chat'};await router.send(second,'文字已保留',job,x.permissions.issue(second,'chat'));
+ assert.equal(job.replyState,'submitted');assert.equal(job.stickerState,'unknown');assert.equal(used,1);
+ assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,2);
+});
+
+test('插件委托身份已经发图后，同一轮不再选图，文字说明仍可按预算发送',async t=>{
+ const x=await setup(t),router=new Router(x.store,{stop:async()=>{}},x.extensions,log,x);router.attach(x.bot);
+ let selected=0;router.replySticker=async()=>{selected++;return null;};
+ const msg=message(),c=x.permissions.issue(msg,'chat'),child=x.permissions.delegate(c,'qq-sticker');
+ await x.actions.request('send_private_msg',{user_id:Number(msg.peer),message:[{type:'image',data:{file:'base64://test'}}]},child);
+ assert.equal(x.actions.hasMediaSent(c),true);
+ await router.send(msg,'找到啦',{mode:'chat'},c);
+ assert.equal(selected,0);assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,2);
+});
+
+test('QQ 原生表情接收时保留具体编号和已知名称',()=>{
+ const msg=normalize({post_type:'message',self_id:10000002,user_id:10000001,message_type:'private',message_id:12,message:[{type:'face',data:{id:13}},{type:'face',data:{id:999}}]});
+ assert.match(msg.text,/id=13 呲牙/);assert.match(msg.text,/id=999/);assert.equal(msg.parts[0].type,'face');
+});
+
+test('消息贴表情校验当前聊天和真实消息，网关 ACK 只表示已提交',async t=>{
+ const x=await setup(t),msg=message({id:'123'}),c=x.permissions.issue(msg,'chat');
+ await x.events.receive(msg);
+ const result=await x.actions.reactMessage('123','13',c);
+ assert.equal(result.state,'submitted');assert.deepEqual(x.sent.at(-1),{action:'set_msg_emoji_like',params:{message_id:123,emoji_id:'13'}});
+ await assert.rejects(x.actions.reactMessage('124','13',c),/当前聊天/);
+ await assert.rejects(x.actions.reactMessage('123','not-an-id',c),/表情 ID/);
+ x.store.data.framework.listenPrivate=true;x.store.data.framework.listenUsers.push('123456');
+ const other=x.permissions.issue(message({id:'123',user:'123456',peer:'123456',key:'10000002:private:123456'}),'chat');
+ await assert.rejects(x.actions.reactMessage('123','13',other),/当前聊天/);
+});
+
+test('自主贴表情不重发图片，失败时保留文字且不自动重试',async t=>{
+ const x=await setup(t),router=new Router(x.store,{stop:async()=>{}},x.extensions,log,x);router.attach(x.bot);
+ const msg=message({id:'123'});await x.events.receive(msg);
+ let attempts=0,recorded=0;
+ router.replySticker=async()=>({reaction:{messageId:'123',emojiId:'13'},valid:()=>true,sent:async()=>recorded++});
+ x.actions.reactMessage=async()=>{attempts++;throw Error('gateway unavailable');};
+ const job={mode:'chat'};await router.send(msg,'真开心',job,x.permissions.issue(msg,'chat'));
+ assert.equal(attempts,1);assert.equal(recorded,1);assert.equal(job.reactionState,'failed');
+ const sends=x.sent.filter(row=>row.action==='send_private_msg');assert.equal(sends.length,1);assert.equal(sends[0].params.message.some(part=>part.type==='image'),false);
+});
 const manifest=(id='qq-test')=>({id,name:'测试规则',version:'2.0.0',hostApiVersion:2,runtime:'declarative',entry:'rules.json',capabilities:['commands','actions'],configSchema:{}});
 const archive=(m=manifest(),rules={rules:[{type:'command',match:'/测试',reply:'规则回复'}],actions:[{id:'answer',reply:'动作回复'}]})=>zipSync({'manifest.json':strToU8(JSON.stringify(m)),'rules.json':strToU8(JSON.stringify(rules))});
 test('settings reject blank, zero, overflow and noninteger ports',()=>{
@@ -131,7 +265,8 @@ test('request inbox hides flags; handling request does not grant chat or tool pe
  const x=await setup(t),f=x.store.data.framework;f.listenUsers.push('123456');f.enabledActions.push('qq.request.decide');
  const request=normalizeEvent({post_type:'request',request_type:'friend',self_id:10000002,user_id:123456,flag:'sensitive-flag'});
  await x.events.receive(request);assert.equal('flag' in x.events.snapshot().requests[0],false);
- const c=x.permissions.issue(message());await x.actions.invoke('qq.request.decide',{requestId:x.events.requests[0].requestId,approve:true,reason:''},c);
+ const c=x.permissions.issue(message()),result=await x.actions.invoke('qq.request.decide',{requestId:x.events.requests[0].requestId,approve:true,reason:''},c);
+ assert.equal(result.state,'submitted');assert.equal(x.events.requests[0].state,'accepted');
  assert.equal(x.sent[0].action,'set_friend_add_request');assert.equal(f.grants.length,0);assert.equal(x.store.data.settings.allowedUsers.includes('123456'),false);
  await assert.rejects(x.actions.invoke('qq.request.decide',{requestId:x.events.requests[0].requestId,approve:true,reason:''},c),/已处理/);
 });
@@ -158,7 +293,7 @@ test('ordinary chat and persona are removable without removing core owner task r
  x.store.data.framework.listenUsers.push('123456');x.store.data.settings.allowedUsers.push('123456');
  await router.receive(message({user:'123456',peer:'123456',key:'10000002:private:123456'}));assert.equal(x.sent.length,0);
  await router.receive(message({id:'2',text:'机器人状态'}));await Promise.all([...router.queues.values()]);assert.match(x.sent[0].params.message[0].data.text,/QQ 在线/);
- await router.receive(message({id:'3',text:'查询当前状态'}));await Promise.all([...router.queues.values()]);assert.equal(x.sent.length,2);
+ await router.receive(message({id:'3',text:'查询当前状态'}));await Promise.all([...router.queues.values()]);assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,2);
  assert.equal(router.isOwner({...message(),type:'notice'}),false);
 });
 test('group users never inherit owner conversation or tool authorization',async t=>{
@@ -265,7 +400,11 @@ test('trusted native SDK is disabled by default and retains original actor acros
  const c=x.permissions.issue(message());x.store.data.framework.enabledActions.push(cap);
  await assert.rejects(x.actions.invoke(cap,{},c),/停用/);
  const item=x.store.data.framework.nativePackages[pack.id];item.enabled=true;
- const result=await x.actions.invoke(cap,{},c);assert.deepEqual(result,{actor:'10000001',plugin:pack.id});
+ const result=await x.actions.invoke(cap,{},c);
+ // 结果协议会附加 state/verified/evidence/protocol；这里只校验身份语义，再确认附加字段存在。
+ assert.deepEqual({actor:result.actor,plugin:result.plugin},{actor:'10000001',plugin:pack.id});
+ assert.equal(result.state,'confirmed');
+ assert.equal(result.protocol,1);
  x.store.data.framework.listenUsers.push('123456');item.scope.users.push('123456');
  const ordinary=x.permissions.issue(message({user:'123456',peer:'123456',key:'10000002:private:123456'}));
  await assert.rejects(x.actions.invoke(cap,{},ordinary),/尚未.*开放/);
@@ -318,6 +457,6 @@ test('owner pause is not held behind a running model turn and stale reply is can
  const router=new Router(x.store,native,x.extensions,log,x);router.attach(x.bot);
  await router.receive(message({id:'pending'}));while(!entered)await delay(1);
  await router.receive(message({id:'pause',text:'暂停机器人'}));await Promise.all([...router.queues.values()]);
- assert.equal(x.store.data.framework.paused,true);assert.equal(x.sent.length,1);assert.match(x.sent[0].params.message[0].data.text,/暂停/);
+ assert.equal(x.store.data.framework.paused,true);assert.equal(x.sent.filter(row=>row.action==='send_private_msg').length,1);assert.match(x.sent[0].params.message[0].data.text,/暂停/);
  assert.equal(x.store.data.inbox.find(j=>j.message.id==='pending').status,'cancelled');
 });

@@ -40,6 +40,12 @@ test('stale food jokes are discouraged for unrelated messages but not actual foo
  assert.equal(styleAdvice(recent,'今天吃了什么？').foodLock,false);assert.equal(reviewReply('今天吃了一碗白饭呀',recent,'今天吃了什么？').repeat,false);
  assert.equal(styleAdvice(recent,'不要再提吃饭了').foodLock,true);
 });
+test('用户已经回答饮食问题后，不再重复追问',()=>{
+ const advice=styleAdvice([], '没有吃，刚忙完', ['没有吃，刚忙完']);
+ assert.equal(advice.foodAnswered,true);
+ assert.equal(reviewReply('那你吃饭了吗？', [], '没有吃，刚忙完', ['没有吃，刚忙完']).repeat,true);
+ assert.equal(reviewReply('那先忙完再吃点东西吧。', [], '没有吃，刚忙完', ['没有吃，刚忙完']).repeat,false);
+});
 test('duplicate checks allow explicit repetitions and factual identifiers',()=>{
  const old='这次我给你介绍一下当前的群聊功能。';
  assert.equal(reviewReply(old,[old],'你再说一遍原话').repeat,false);assert.equal(reviewReply(old,[old],'换个话题吧').repeat,true);
@@ -50,6 +56,20 @@ test('duplicate checks allow explicit repetitions and factual identifiers',()=>{
 test('group context preserves human statements while limiting old self-dialogue',()=>{
  const c=new Conversation({data:{}}),m=message();for(let i=0;i<8;i++){c.remember({...m,id:'u'+i,text:'群友消息'+i});c.sent({...m,id:String(100+i)},900+i,i<4?'重复的同一句老梗':'不同的机器人表达'+i);}
  const rows=c.context({...m,id:'current'}).split('\n').slice(1).map(l=>JSON.parse(l));assert.equal(rows.filter(r=>r.speaker!=='我').length,8);assert.ok(rows.filter(r=>r.speaker==='我').length<=3);assert.equal(c.find(m,'900').text,'重复的同一句老梗');
+});
+
+test('private follow-ups retain the original speakers behind a proactive group story', () => {
+  const conversation = new Conversation({data: {}});
+  const msg = message({kind: 'private', peer: owner, key: bot + ':private:' + owner});
+  conversation.sent(msg, 'story-1', '群里有人说鱼要鲨人了', {
+    key: bot + ':group:' + group,
+    sources: [{id: 'source-1', user: '12345678', text: '鱼要鲨人了', time: Date.now() / 1000}]
+  });
+  const background = conversation.context({...msg, id: 'question', text: '谁说的'});
+  assert.match(background, /12345678/);
+  assert.match(background, /鱼要鲨人了/);
+  assert.match(background, /原消息/);
+  assert.equal(conversation.context({...msg, key: bot + ':private:77777'}), '');
 });
 test('text-only child contexts retain identity, deny tools and expire with the original lease',async t=>{
  const x=await setup(t),parent=x.permissions.issue(message()),child=x.permissions.textOnly(parent);

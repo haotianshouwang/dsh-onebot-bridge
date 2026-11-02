@@ -5,7 +5,7 @@ const bot='10000002',owner='10000001',other='12345678',group='88888',key=bot+':g
 const message=(extra={})=>({bot,user:owner,kind:'group',peer:group,key,id:'m1',...extra});
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
 
-async function setup(t,{search,bytes,sendOutcome='confirmed'}={}){
+async function setup(t,{search,bytes,reactMessage,sendOutcome='confirmed',sendState='submitted'}={}){
  process.env.QQBOT_OWNER=owner;
  const dir=await mkdtemp(path.join(os.tmpdir(),'qq-sticker-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -21,7 +21,8 @@ async function setup(t,{search,bytes,sendOutcome='confirmed'}={}){
   if(id.startsWith('plugin.qq-sticker.'))return originalInvoke(id,args,c,signal);
   invokes.push({id,args});
   if(id==='qq.media.receive')return {id:'res-1',mime:'image/png',name:'x'};
-  if(id==='qq.image.send')return {outcome:sendOutcome};
+  if(id==='qq.image.send')return {outcome:sendOutcome,state:sendOutcome==='unknown'?'unknown':sendState,verified:sendState==='confirmed'};
+  if(id==='qq.message.send')return {outcome:sendOutcome,state:sendState};
   if(id==='plugin.qq-web.search'){
    if(search==='fail')throw new Error('搜索服务不可用');
    return {provider:'Bing RSS',results:[{title:'表情含义',url:'https://example.com/a',snippet:'摘要'}]};
@@ -30,7 +31,7 @@ async function setup(t,{search,bytes,sendOutcome='confirmed'}={}){
  };
  const sdk=new PluginSDK({store,permissions,events,media,actions});
  const stickers=await new StickerStore(dir).open();
- const api=activateSticker(sdk.facade(),{stickers,readResource:async()=>bytes||png});
+ const api=activateSticker(sdk.facade(),{stickers,readResource:async()=>bytes||png,reactMessage});
  const item=store.data.framework.nativePackages['qq-sticker'];
  item.enabled=true;item.scope={private:true,allUsers:false,users:[owner],groups:[group]};
  t.after(()=>{media.stop();return sdk.stop();});
@@ -38,6 +39,19 @@ async function setup(t,{search,bytes,sendOutcome='confirmed'}={}){
 }
 
 const save=async(x,c,extra={})=>x.actions.invoke('plugin.qq-sticker.save',{messageId:'m1',name:'鲸鱼笑',tags:['鲸鱼','得意'],...extra},c);
+
+test('现有表情发送工具可发 QQ 原生小表情，不需要图片入库',async t=>{
+ const x=await setup(t),result=await x.actions.invoke('plugin.qq-sticker.send',{id:'face:13'},x.context());
+ assert.equal(result.kind,'face');assert.equal(result.state,'submitted');assert.equal(x.stickers.stats().count,0);
+ assert.deepEqual(x.invokes.at(-1),{id:'qq.message.send',args:{segments:[{type:'face',data:{id:'13'}}]}});
+});
+
+test('现有表情发送工具可贴消息回应，默认当前真实消息且复用宿主归属校验',async t=>{
+ const calls=[],x=await setup(t,{reactMessage:async(id,emoji,c)=>{calls.push({id,emoji,key:c.key});return {outcome:'confirmed',state:'submitted'};}});
+ const result=await x.actions.invoke('plugin.qq-sticker.send',{id:'reaction:13'},x.context());
+ assert.equal(result.kind,'reaction');assert.equal(result.state,'submitted');assert.deepEqual(calls,[{id:'m1',emoji:'13',key}]);
+ assert.equal(x.stickers.stats().count,0);
+});
 
 test('收藏一张表情，并按内容去重',async t=>{
  const x=await setup(t),c=x.context();
@@ -57,6 +71,8 @@ test('偷别人的表情会记录来源，并能检索到',async t=>{
  const stolen=await x.actions.invoke('plugin.qq-sticker.steal',{messageId:'m1',name:'偷来的',tags:['猫']},c);
  assert.equal(stolen.ok,true);
  assert.equal(stolen.sticker.source,'stolen');
+ assert.equal((await x.actions.invoke('plugin.qq-sticker.list',{query:'猫'},x.context())).items.length,0,'未识图确认前不能作为可发送表情返回');
+ await x.actions.invoke('plugin.qq-sticker.annotate',{id:stolen.sticker.id,isSticker:true},c);
  const list=await x.actions.invoke('plugin.qq-sticker.list',{query:'猫'},x.context());
  assert.equal(list.items.length,1);
  assert.equal(list.items[0].name,'偷来的');
@@ -70,7 +86,7 @@ test('偷图会回传预览，看完图用 annotate 标情绪并能按情绪检�
  assert.equal(stolen.previews.length,1);
  assert.equal(stolen.previews[0].mediaType,'image/png');
  assert.match(stolen.instruction,/annotate/);
- const annotated=await x.actions.invoke('plugin.qq-sticker.annotate',{id:stolen.sticker.id,emotion:'无语',tags:['猫','无奈'],usage:'被无语到时'},c);
+ const annotated=await x.actions.invoke('plugin.qq-sticker.annotate',{id:stolen.sticker.id,isSticker:true,emotion:'无语',tags:['猫','无奈'],usage:'被无语到时'},c);
  assert.equal(annotated.ok,true);
  assert.equal(annotated.sticker.emotion,'无语');
  const list=await x.actions.invoke('plugin.qq-sticker.list',{emotion:'无语'},c);
@@ -84,8 +100,13 @@ test('偷图会回传预览，看完图用 annotate 标情绪并能按情绪检�
 test('发送表情会经过受控资源并记录使用时间',async t=>{
  const x=await setup(t),c=x.context();
  const saved=await save(x,c);
+ await assert.rejects(x.actions.invoke('plugin.qq-sticker.send',{id:saved.sticker.id},c),/尚未确认/);
+ await x.actions.invoke('plugin.qq-sticker.annotate',{id:saved.sticker.id,isSticker:true},c);
  const sent=await x.actions.invoke('plugin.qq-sticker.send',{id:saved.sticker.id},c);
- assert.equal(sent.ok,true);
+ assert.equal(sent.ok,false);
+ assert.equal(sent.state,'submitted');
+ assert.equal(sent.submitted,true);
+ assert.match(sent.instruction,/已提交|不要自动重发/);
  const call=x.invokes.find(i=>i.id==='qq.image.send');
  assert.ok(call,'应通过 qq.image.send 发送');
  assert.ok(call.args.resourceId);
@@ -151,6 +172,7 @@ test('非图片内容会被拒绝收藏',async t=>{
 test('图片发送结果未知时不能声称已经发出',async t=>{
  const x=await setup(t,{sendOutcome:'unknown'}),c=x.context();
  const saved=await save(x,c,{name:'测试图'});
+ await x.actions.invoke('plugin.qq-sticker.annotate',{id:saved.sticker.id,isSticker:true},c);
  const sent=await x.actions.invoke('plugin.qq-sticker.send',{id:saved.sticker.id},c);
  assert.equal(sent.ok,false);
  assert.equal(sent.outcome,'unknown');

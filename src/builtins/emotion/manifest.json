@@ -1,0 +1,75 @@
+{
+  "id": "qq-emotion",
+  "name": "情绪与见闻",
+  "version": "1.0.0",
+  "bundled": true,
+  "apiVersion": 2,
+  "type": "native-source",
+  "entry": "src/builtins/emotion/index.js",
+  "dependencies": {
+    "framework": ">=0.13.0"
+  },
+  "configVersion": 1,
+  "description": "从真实对话更新角色情绪，在指定群里发现有趣的话题或没接上的交流，并通过主动联系向主人分享。",
+  "capabilities": [
+    "actions",
+    "context",
+    "storage"
+  ],
+  "configSchema": {
+    "autoObserve": {
+      "type": "boolean",
+      "title": "根据聊天更新心情",
+      "default": true
+    },
+    "shareWithOwner": {
+      "type": "boolean",
+      "title": "向主人分享群聊见闻",
+      "default": true,
+      "description": "只从指定群分享给主人私聊，需要自主时间的主动联系和群聊分享同时开启。"
+    },
+    "shareUnanswered": {
+      "type": "boolean",
+      "title": "没接上话时找主人聊聊",
+      "default": true,
+      "description": "根据真实回复关系判断，不推断群友故意冷落。"
+    },
+    "halfLifeMinutes": {
+      "type": "number",
+      "title": "心情缓和半衰期（分钟）",
+      "default": 60,
+      "min": 5,
+      "max": 1440,
+      "integer": true
+    },
+    "observeIntervalSec": {
+      "type": "number",
+      "title": "观察合并间隔（秒）",
+      "default": 60,
+      "min": 15,
+      "max": 600,
+      "integer": true
+    }
+  },
+  "settings": {
+    "title": "情绪与见闻",
+    "description": "状态与分享记录都关联真实聊天；停用后不观察、不注入上下文、不产生分享。",
+    "sections": [
+      {
+        "title": "心情与主动分享",
+        "fields": [
+          "autoObserve",
+          "shareWithOwner",
+          "shareUnanswered",
+          "halfLifeMinutes",
+          "observeIntervalSec"
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    "actions",
+    "context",
+    "storage"
+  ]
+}

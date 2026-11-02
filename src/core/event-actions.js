@@ -1,5 +1,7 @@
 import {isOwner} from './owners.js';
 import {createHash} from 'node:crypto';
+import {normalizeResult} from './result.js';
+import {wireContract} from './contracts.js';
 export class EventActions{
  #tickets=new WeakMap();
  constructor(store,{bot,authorize,cooldowns=()=>new Map()}={}){Object.assign(this,{store,bot,authorize,cooldowns});this.fallbackCooldowns=new Map();}
@@ -16,7 +18,7 @@ export class EventActions{
   const id='poke-'+createHash('sha256').update([e.bot,e.kind,e.peer,e.user,e.target,e.time,e.id].join('|')).digest('hex'),outbox=f.pokeOutbox??=[];if(outbox.some(r=>r.id===id))return {outcome:'duplicate'};
   const bucket=e.bot+':'+e.user,cooldowns=this.cooldowns()||this.fallbackCooldowns,now=Date.now();if(now-(cooldowns.get(bucket)||0)<60000)throw Error('回戳冷却中，同一对象每分钟最多一次');
   const record={id,plugin:'poke',peer:e.peer,user:e.user,status:'queued',at:new Date().toISOString()};outbox.push(record);if(outbox.length>200)outbox.splice(0,outbox.length-200);await this.store.persist();
-  try{this.check(row);row.used=true;cooldowns.set(bucket,now);record.status='sending';const result=await b.request(e.kind==='group'?'group_poke':'friend_poke',{user_id:Number(e.user),...e.kind==='group'?{group_id:Number(e.peer)}:{}},15000);record.status=result.outcome==='confirmed'?'confirmed':'accepted';return result;}
+  try{this.check(row);row.used=true;cooldowns.set(bucket,now);record.status='sending';const action=e.kind==='group'?'group_poke':'friend_poke';const result=normalizeResult(await b.request(action,{user_id:Number(e.user),...e.kind==='group'?{group_id:Number(e.peer)}:{}},15000),{contract:wireContract(action)});record.status=result.state;return result;}
   catch(error){record.status=record.status==='queued'?'cancelled':error.code==='FAILED'?'failed':'unknown';record.error=String(error.message).slice(0,200);throw error;}finally{await this.store.persist();}
  }
 }

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { AdminAuth, validatePassword } from './admin-auth.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
+const THREE_MODULE = path.join(PUBLIC_DIR, 'three.module.js');
 const COOKIE = 'qqadmin';
 const MAX_BODY = 256 * 1024;
 const ALLOWED_ACTIONS = new Set([
@@ -89,9 +90,11 @@ export async function startAdminServer({dir, action, asset, onSessionEnd, log = 
     ['/', 'index.html', 'text/html; charset=utf-8'],
     ['/assets/app.css', 'app.css', 'text/css; charset=utf-8'],
     ['/assets/app.js', 'app.js', 'text/javascript; charset=utf-8'],
-    ['/assets/star-map.js', 'star-map.js', 'text/javascript; charset=utf-8']
+    ['/assets/star-map.js', 'star-map.js', 'text/javascript; charset=utf-8'],
+    ['/assets/three.module.js', THREE_MODULE, 'text/javascript; charset=utf-8']
   ]) assets.set(name, { file, type });
-  await Promise.all([...assets.values()].map(asset => readFile(path.join(PUBLIC_DIR, asset.file))));
+  const assetPath = value => path.isAbsolute(value.file) ? value.file : path.join(PUBLIC_DIR, value.file);
+  await Promise.all([...assets.values()].map(value => readFile(assetPath(value))));
 
   let tail = Promise.resolve();
   const runAction = (body, meta) => {
@@ -116,7 +119,7 @@ export async function startAdminServer({dir, action, asset, onSessionEnd, log = 
       if (method === 'GET' && assets.has(pathname)) {
         const asset = assets.get(pathname);
         try {
-          const body = await readFile(path.join(PUBLIC_DIR, asset.file));
+          const body = await readFile(assetPath(asset));
           res.writeHead(200, headers({ 'content-type': asset.type, 'content-length': body.length, 'cache-control': 'no-cache' }));
           return res.end(body);
         } catch (error) {

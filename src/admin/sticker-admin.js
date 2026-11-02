@@ -39,7 +39,7 @@ function dateEnd(value) {
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 
-export function createStickerAdmin({stickers, getItem, now = () => Date.now()}) {
+export function createStickerAdmin({stickers, getItem, intelligence, now = () => Date.now()}) {
   if (!stickers) throw new Error('表情包存储不可用');
 
   const configOf = () => {
@@ -53,7 +53,7 @@ export function createStickerAdmin({stickers, getItem, now = () => Date.now()}) 
     const todayStart = new Date(now());
     todayStart.setHours(0, 0, 0, 0);
     const stats = stickers.stats(config.maxStickers);
-    const categories = stickers.categories().map(row => ({
+    const categories = stickers.categories({classification:'verified'}).map(row => ({
       emotion: row.emotion,
       label: EMOTION_LABELS[row.emotion] || (row.emotion ? row.emotion : '未分类'),
       count: row.count
@@ -75,11 +75,14 @@ export function createStickerAdmin({stickers, getItem, now = () => Date.now()}) 
       error: item.error || null,
       migrationError: item.migrationError || null,
       config,
+      intelligence: intelligence?.() || null,
       scope: item.scope || null,
       stats: {
         ...stats,
-        total: stats.count,
-        today: stickers.addedSince(todayStart.getTime()),
+        total: stickers.count({classification:'verified'}),
+        pending: stickers.count({classification:'pending'}),
+        excluded: stickers.count({classification:'excluded'}),
+        today: stickers.count({classification:'verified', from:todayStart.getTime()}),
         lastCollectedAt: iso(stickers.latestCreatedAt()),
         usageBytes: stats.bytes
       },
@@ -114,6 +117,7 @@ export function createStickerAdmin({stickers, getItem, now = () => Date.now()}) 
       offset: positiveInt(query.offset, 0, 0, 100000),
       limit: positiveInt(query.limit, 24, 1, 48)
     };
+    filters.classification = ['verified','pending','excluded'].includes(query.classification) ? query.classification : 'verified';
     if (filters.source && !SOURCES.includes(filters.source)) filters.source = '';
     const rows = stickers.list(filters);
     const total = stickers.count(filters);
@@ -135,13 +139,14 @@ export function createStickerAdmin({stickers, getItem, now = () => Date.now()}) 
         createdAt: iso(row.createdAt),
         usedAt: iso(row.usedAt),
         annotatedAt: iso(row.annotatedAt),
+        isSticker: row.isSticker ?? null,
         imageUrl: '/api/sticker-image?id=' + encodeURIComponent(row.id)
       })),
       total,
       offset: filters.offset,
       limit: filters.limit,
       hasMore: filters.offset + rows.length < total,
-      categories: stickers.categories().map(row => ({
+      categories: stickers.categories({classification:filters.classification}).map(row => ({
         emotion: row.emotion,
         label: EMOTION_LABELS[row.emotion] || (row.emotion ? row.emotion : '未分类'),
         count: row.count

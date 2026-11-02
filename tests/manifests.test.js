@@ -7,12 +7,14 @@ import {manifest as sticker} from '../src/builtins/sticker/index.js';
 import {manifest as qzone} from '../src/builtins/qzone/index.js';
 import {manifest as memory} from '../src/builtins/memory/index.js';
 import {manifest as autonomy} from '../src/builtins/autonomy/index.js';
+import {manifest as emotion} from '../src/builtins/emotion/index.js';
+import {manifest as mediaAgent} from '../src/builtins/media-agent/index.js';
 import {validatePackageMetadata, PACKAGE_API_VERSION} from '../src/core/package-model.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
-test('四个源码插件都有同步的 manifest.json 镜像', async () => {
-  for (const manifest of [sticker, qzone, memory, autonomy]) {
+test('源码插件都有同步的 manifest.json 镜像', async () => {
+  for (const manifest of [sticker, qzone, memory, autonomy, emotion, mediaAgent]) {
     const file = path.join(root, '..', manifest.entry.replace(/index\.js$/, 'manifest.json'));
     const json = JSON.parse(await readFile(file, 'utf8'));
     const expected = JSON.parse(JSON.stringify({

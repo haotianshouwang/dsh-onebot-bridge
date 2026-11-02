@@ -1,4 +1,5 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {freeMode} from './core/freedom.js';
 import {isOwner} from './core/owners.js';
 import {validateConfig,validatePackageMetadata,migrateConfig,packagesFor,rememberSettings} from './core/package-model.js';
 const safeId=/^qq-[a-z0-9][a-z0-9-]{0,38}$/;
@@ -58,7 +59,7 @@ export class PluginSDK {
    this.checkLease();this.store.data.framework.pluginData[id]=JSON.parse(encoded);await this.store.persist();return structuredClone(value);
   };
   const api=Object.freeze({
-   id,apiVersion:2,active:()=>this.active(id),getConfig:()=>structuredClone(item.config),getScope:()=>({...structuredClone(item.scope),groups:item.scope.groups.filter(g=>this.store.data.framework.listenGroups.includes(g))}),reject:message=>{throw Object.assign(new Error(String(message)),{code:'PLUGIN_INPUT'});},
+   id,apiVersion:2,active:()=>this.active(id),businessLimitsEnabled:()=>!freeMode(this.store),getConfig:()=>structuredClone(item.config),getScope:()=>({...structuredClone(item.scope),groups:item.scope.groups.filter(g=>this.store.data.framework.listenGroups.includes(g))}),reject:message=>{throw Object.assign(new Error(String(message)),{code:'PLUGIN_INPUT'});},
    isOwner:context=>isOwner(this.store.data.framework,context?.actor),
    // 让插件把长任务移出当前回调的异步上下文：否则回调结束后，任务里的工具调用会继承已失效的租约。
    detach:work=>this.calls.exit(work),

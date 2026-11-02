@@ -32,7 +32,7 @@ function durationMinutes(start, end) {
   return Math.max(0, Math.round((Number(end) - Number(start)) / 60000));
 }
 
-export function createAutonomyAdmin({auto, dir, getItem, log = () => {}, now = () => Date.now(), deviceKey = null, decideSecret = null}) {
+export function createAutonomyAdmin({auto, dir, getItem, log = () => {}, now = () => Date.now(), deviceKey = null, decideSecret = null, lifeState = null, socialEnergy = null}) {
   if (!auto?.store) throw new Error('自主时间存储不可用');
   const vault = new SecretVault({dir, now, deviceKey});
   const store = auto.store;
@@ -163,7 +163,7 @@ export function createAutonomyAdmin({auto, dir, getItem, log = () => {}, now = (
       scope: value.scope || null,
       today: {
         runs: store.total(today),
-        maxRuns: config.maxRunsPerDay ?? 8,
+        maxRuns: config.freeMode || config.runLimitMode === 'unlimited' ? null : config.runLimitMode === 'recommended' ? 8 : config.maxRunsPerDay ?? 8,
         activities: todayActivities.length
       },
       lastActivity: activities[0] ? {
@@ -184,6 +184,8 @@ export function createAutonomyAdmin({auto, dir, getItem, log = () => {}, now = (
           return null;
         }
       })(),
+      life: lifeState?.snapshot?.() || null,
+      socialEnergy: socialEnergy?.snapshot?.() || null,
       secret: secretState(null)
     };
   }
