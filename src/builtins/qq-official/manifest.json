@@ -1,0 +1,94 @@
+{
+  "id": "qq-official-bot",
+  "name": "QQ 官方机器人",
+  "version": "1.0.0",
+  "apiVersion": 2,
+  "type": "native-source",
+  "entry": "src/builtins/qq-official/index.js",
+  "bundled": true,
+  "description": "通过腾讯 QQ 官方开放平台二维码绑定或 AppID/AppSecret 接入官方机器人，支持群聊、单聊与频道 @ 消息。",
+  "dependencies": {
+    "framework": ">=0.13.0"
+  },
+  "configVersion": 1,
+  "capabilities": [
+    "actions",
+    "storage"
+  ],
+  "configSchema": {
+    "apiBaseUrl": {
+      "type": "string",
+      "title": "QQ 官方 API 地址",
+      "default": "https://api.sgroup.qq.com",
+      "maxLength": 200
+    },
+    "sandbox": {
+      "type": "boolean",
+      "title": "使用沙箱 API",
+      "default": false
+    },
+    "autoConnect": {
+      "type": "boolean",
+      "title": "启用后自动连接",
+      "default": true
+    },
+    "autoReply": {
+      "type": "boolean",
+      "title": "收到消息后交给 DSH AI 回复",
+      "default": true
+    },
+    "replyMaxChars": {
+      "type": "number",
+      "title": "单条回复字符上限",
+      "default": 4500,
+      "min": 100,
+      "max": 12000,
+      "integer": true
+    },
+    "intents": {
+      "type": "number",
+      "title": "Gateway intents 位掩码",
+      "default": 1107296256,
+      "min": 1,
+      "max": 2147483647,
+      "integer": true
+    },
+    "allowedUsers": {
+      "type": "string[]",
+      "title": "允许自动回复的用户 OpenID",
+      "default": [],
+      "maxItems": 100,
+      "maxLength": 200
+    },
+    "allowedGroups": {
+      "type": "string[]",
+      "title": "允许自动回复的群 OpenID 或频道键",
+      "default": [],
+      "maxItems": 100,
+      "maxLength": 200
+    }
+  },
+  "settings": {
+    "title": "QQ 官方机器人",
+    "description": "QQ 官方机器人支持腾讯官方二维码绑定和手动 AppID/AppSecret 配置；凭据只保存在 DSH credentials。",
+    "sections": [
+      {
+        "title": "连接与回复",
+        "fields": [
+          "apiBaseUrl",
+          "sandbox",
+          "autoConnect",
+          "autoReply",
+          "replyMaxChars",
+          "intents",
+          "allowedUsers",
+          "allowedGroups"
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    "actions",
+    "storage"
+  ]
+}
