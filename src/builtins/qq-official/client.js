@@ -11,23 +11,14 @@ const MAX_PASSIVE_CHUNKS = 5;
 const REFRESH_MARGIN_MS = 60000;
 const MAX_RECONNECT_MS = 60000;
 
-function safeBaseUrl(value) {
+// Never forward a QQ bearer token or the token request body to a custom endpoint.
+export function safeBaseUrl(value) {
   let url;
-  try {
-    url = new URL(String(value || DEFAULT_API_BASE_URL));
-  } catch {
-    throw new Error('QQ 官方 API 地址无效');
-  }
-  if (url.protocol !== 'https:' || url.username || url.password || (url.pathname !== '/' && url.pathname !== '')) {
-    throw new Error('QQ 官方 API 地址必须是无账号密码的 HTTPS 根地址');
+  try { url = new URL(String(value || DEFAULT_API_BASE_URL)); } catch { throw new Error('QQ 官方 API 地址无效'); }
+  if (![DEFAULT_API_BASE_URL, DEFAULT_SANDBOX_API_BASE_URL].includes(url.origin) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('仅支持 QQ 官方生产或沙箱 API 根地址');
   }
   return url.origin;
-}
-
-function safeError(error, secrets = []) {
-  let message = String(error?.message || error || 'QQ 官方请求失败');
-  for (const secret of secrets) if (secret) message = message.replaceAll(String(secret), '[凭据已隐藏]');
-  return message.replace(/\s+/g, ' ').slice(0, 300);
 }
 
 function splitText(value, maxBytes = MAX_TEXT_BYTES) {
@@ -72,19 +63,18 @@ function normalizeEvent(type, data, appId) {
 }
 
 export class QQOfficialClient extends EventEmitter {
-  constructor({appId, clientSecret, apiBase = DEFAULT_API_BASE_URL, tokenUrl = TOKEN_URL, gatewayUrl = '', intents = DEFAULT_INTENTS, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, log = () => {}} = {}) {
+  constructor({appId, clientSecret, apiBase = DEFAULT_API_BASE_URL, intents = DEFAULT_INTENTS, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, log = () => {}} = {}) {
     super();
     this.appId = String(appId || '');
     this.clientSecret = String(clientSecret || '');
     this.apiBase = safeBaseUrl(apiBase);
-    this.tokenUrl = String(tokenUrl || TOKEN_URL);
-    this.gatewayUrl = String(gatewayUrl || '');
     this.intents = Number.isSafeInteger(intents) ? intents : DEFAULT_INTENTS;
     this.fetch = fetchImpl;
     this.WebSocketImpl = WebSocketImpl;
     this.log = log;
     this.ws = null;
     this.closed = true;
+    this.lifetime = new AbortController();
     this.connecting = false;
     this.retryTimer = null;
     this.heartbeatTimer = null;
@@ -102,12 +92,10 @@ export class QQOfficialClient extends EventEmitter {
     this.replySequences = new Map();
   }
 
-  configure({appId, clientSecret, apiBase, tokenUrl, gatewayUrl, intents} = {}) {
+  configure({appId, clientSecret, apiBase, intents} = {}) {
     if (appId !== undefined) this.appId = String(appId || '');
     if (clientSecret !== undefined) this.clientSecret = String(clientSecret || '');
     if (apiBase !== undefined) this.apiBase = safeBaseUrl(apiBase);
-    if (tokenUrl !== undefined) this.tokenUrl = String(tokenUrl || TOKEN_URL);
-    if (gatewayUrl !== undefined) this.gatewayUrl = String(gatewayUrl || '');
     if (intents !== undefined && Number.isSafeInteger(intents)) this.intents = intents;
   }
 
@@ -117,21 +105,30 @@ export class QQOfficialClient extends EventEmitter {
 
   start() {
     if (!this.appId || !this.clientSecret) throw new Error('QQ 官方机器人缺少 AppID 或 AppSecret');
+    if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
     this.closed = false;
     if (!this.connecting && !this.ws) void this.connect();
   }
 
   async stop() {
     this.closed = true;
+    this.lifetime.abort();
+    this.accessToken = this.connectionToken = this.sessionId = '';
+    this.tokenExpiresAt = this.lastSeq = this.attempt = 0;
+    this.tokenPromise = null;
+    this.canResume = false;
+    this.replySequences.clear();
     this.connecting = false;
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.stopHeartbeat();
     const ws = this.ws;
     this.ws = null;
-    this.status = {...this.status, state: 'stopped', connected: false};
+    this.status = {state: 'stopped', connected: false, gateway: '', botName: '', lastError: ''};
     if (ws) {
       try { ws.removeAllListeners(); } catch {}
+      // ws emits an error when a handshake is interrupted.
+      ws.on('error', () => {});
       try { ws.close(); } catch {}
       try { ws.terminate(); } catch {}
     }
@@ -140,32 +137,38 @@ export class QQOfficialClient extends EventEmitter {
   async getAccessToken() {
     if (this.accessToken && this.tokenExpiresAt - Date.now() > REFRESH_MARGIN_MS) return this.accessToken;
     if (this.tokenPromise) return this.tokenPromise;
-    this.tokenPromise = (async () => {
-      const response = await this.fetch(this.tokenUrl, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({appId: this.appId, clientSecret: this.clientSecret}), signal: AbortSignal.timeout(15000)}).catch(error => {throw new Error(safeError(error, [this.clientSecret]));});
+    const {signal} = this.lifetime;
+    signal.throwIfAborted();
+    const pending = this.tokenPromise = (async () => {
+      const response = await this.fetch(TOKEN_URL, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({appId: this.appId, clientSecret: this.clientSecret}), redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15000)])}).catch(() => {throw new Error('无法访问 QQ 官方认证服务');});
       const raw = await response.text();
       let value;
       try { value = JSON.parse(raw); } catch { value = null; }
       if (!response.ok || !value || typeof value.access_token !== 'string' || !value.access_token) throw new Error(`QQ 官方 access_token 获取失败（HTTP ${response.status}）`);
+      signal.throwIfAborted();
       this.accessToken = value.access_token;
       this.tokenExpiresAt = Date.now() + (Number(value.expires_in) || 7200) * 1000;
       return this.accessToken;
     })();
-    try { return await this.tokenPromise; } finally { this.tokenPromise = null; }
+    try { return await pending; } finally { if (this.tokenPromise === pending) this.tokenPromise = null; }
   }
 
   async request(method, path, body) {
-    const token = await this.getAccessToken();
+    const {signal} = this.lifetime;
     const url = new URL(path, this.apiBase + '/');
-    const response = await this.fetch(url, {method, headers: {authorization: `QQBot ${token}`, 'x-union-appid': this.appId, 'content-type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000)}).catch(error => {throw new Error(safeError(error, [this.clientSecret, token]));});
+    if (url.origin !== this.apiBase) throw new Error('仅支持 QQ 官方 API 地址');
+    const token = await this.getAccessToken();
+    signal.throwIfAborted();
+    const response = await this.fetch(url, {method, headers: {authorization: `QQBot ${token}`, 'x-union-appid': this.appId, 'content-type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15000)])}).catch(() => {throw new Error('无法访问 QQ 官方 API');});
     const raw = await response.text();
+    signal.throwIfAborted();
     let value;
-    try { value = JSON.parse(raw); } catch { value = raw; }
+    try { value = JSON.parse(raw); } catch { value = null; }
     if (!response.ok) throw new Error(`QQ 官方 API 请求失败（HTTP ${response.status}）`);
     return value;
   }
 
   async resolveGateway() {
-    if (this.gatewayUrl) return this.gatewayUrl;
     const value = await this.request('GET', '/gateway/bot');
     if (!value?.url || typeof value.url !== 'string') throw new Error('QQ 官方 Gateway 返回地址无效');
     return value.url;
@@ -173,24 +176,26 @@ export class QQOfficialClient extends EventEmitter {
 
   async connect() {
     if (this.closed || this.connecting || this.ws) return;
+    const {signal} = this.lifetime;
     this.connecting = true;
     this.status = {...this.status, state: 'connecting', connected: false};
     try {
       const [token, url] = await Promise.all([this.getAccessToken(), this.resolveGateway()]);
-      if (this.closed) return;
+      if (signal.aborted) return;
+      const endpoint = new URL(url);
+      if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password) throw new Error('QQ 官方 Gateway 地址无效');
       this.connectionToken = token;
-      this.status = {...this.status, state: 'connecting', gateway: url, lastError: ''};
+      this.status = {...this.status, state: 'connecting', gateway: endpoint.origin, lastError: ''};
       const ws = new this.WebSocketImpl(url, {handshakeTimeout: 15000, maxPayload: 1024 * 1024});
       this.ws = ws;
       ws.on('open', () => this.emit('open'));
       ws.on('message', data => this.handleFrame(data));
-      ws.on('error', error => this.fail(error));
+      ws.on('error', () => this.fail(new Error('QQ 官方 Gateway 连接异常')));
       ws.on('close', code => this.handleClose(code));
     } catch (error) {
-      this.fail(error);
-      this.scheduleReconnect();
+      if (!signal.aborted) { this.fail(new Error('QQ 官方 Gateway 连接失败')); this.scheduleReconnect(); }
     } finally {
-      this.connecting = false;
+      if (!signal.aborted) this.connecting = false;
     }
   }
 
@@ -256,7 +261,7 @@ export class QQOfficialClient extends EventEmitter {
     this.stopHeartbeat();
     this.ws = null;
     this.status = {...this.status, state: this.closed ? 'stopped' : 'disconnected', connected: false};
-    if (code === 4004) { this.accessToken = ''; this.tokenExpiresAt = 0; this.gatewayUrl = ''; this.canResume = false; }
+    if (code === 4004) { this.accessToken = ''; this.tokenExpiresAt = 0; this.canResume = false; }
     if ([9001, 9005].includes(Number(code))) { this.sessionId = ''; this.canResume = false; }
     this.emit('status', structuredClone(this.status));
     this.scheduleReconnect();
@@ -270,8 +275,8 @@ export class QQOfficialClient extends EventEmitter {
   }
 
   fail(error) {
-    const message = safeError(error, [this.clientSecret, this.accessToken]);
-    this.status = {...this.status, lastError: message, connected: false};
+    const message = error.message; // Only locally defined diagnostics reach fail().
+    this.status = {...this.status, state: 'disconnected', lastError: message, connected: false};
     this.log('warn', 'QQ 官方机器人：' + message);
     this.emit('status', structuredClone(this.status));
   }
@@ -284,7 +289,9 @@ export class QQOfficialClient extends EventEmitter {
     const key = String(reply?.messageId || target.kind + ':' + (target.openid || target.groupOpenid || target.channelId));
     sequence = Math.max(sequence + 1, (this.replySequences.get(key) || 0) + 1);
     let lastId = null;
+    const {signal} = this.lifetime;
     for (const chunk of chunks) {
+      signal.throwIfAborted();
       const body = {msg_type: 0, content: chunk};
       if (reply?.messageId) { body.msg_id = reply.messageId; if (target.kind === 'group') body.msg_seq = sequence++; }
       const value = await this.request('POST', path, body);

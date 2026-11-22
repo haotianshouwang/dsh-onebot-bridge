@@ -52,7 +52,7 @@ cd F:\大肥鱼
 - 夜航控制台：`http://127.0.0.1:3097`
 - NapCat WebUI：`http://127.0.0.1:6099/webui`
 
-首次进入夜航控制台时设置本机管理密码。然后依次配置 OneBot WebSocket、主人 QQ、模型和动作权限；在“监听”里选择私聊和群范围，在“聊天”里设置群是否需要 @。需要使用主动能力时，再在“自主时间”中启用长期记忆、自主活动和对应动作授权。
+首次进入前，在已认证的 DSH 设置 → QQ 框架 → 网页安全设置管理密码。然后依次配置 OneBot WebSocket、主人 QQ、模型和动作权限；在“监听”里选择私聊和群范围，在“聊天”里设置群是否需要 @。需要使用主动能力时，再在“自主时间”中启用长期记忆、自主活动和对应动作授权。
 
 ### 4. 记忆与自主时间
 
@@ -91,16 +91,22 @@ cd F:\大肥鱼
 ```powershell
 npm test
 npm run check:manifests
-node scripts/check-deployment.mjs
 ```
 
-真实 QQ 写操作仍需按 `docs/REAL_ACCEPTANCE.md` 逐项验收；单元测试和模拟网关通过不等于真实账号已经验收。
+真实 DSH、Edge 和回环 HTTPS 的双端设置验收见[开发与验证](docs/DEVELOPMENT.md#隔离浏览器验收)。真实 QQ 写操作仍需按 `docs/REAL_ACCEPTANCE.md` 逐项验收；单元测试和模拟网关通过不等于真实账号已经验收。
 
 > UI 与插件治理后的开发规范：仓库根目录 `docs/ARCHITECTURE.md`、`DEVELOPMENT.md`、`CODING_STANDARDS.md`、`PLUGIN_SYSTEM.md`、`PLUGIN_DEVELOPMENT.md`、`UI_GUIDELINES.md`、`API_CONVENTIONS.md`、`SECURITY.md`、`MIGRATION.md`。UI 改动前必须先读 `UI_GUIDELINES.md`。
 
-## 夜航控制台
+## 夜航控制台：运行监控与日常设置
 
-暖白、低饱和、固定侧栏的本地管理台。主导航为总览、连接、聊天、监听、权限、插件、日志、安全；「插件」下新增四个独立页面：
+默认在本机打开 <http://127.0.0.1:3097/>。首次使用请先进入已认证的 **DSH → 设置 → QQ 框架 → 网页安全**，设置独立管理密码（至少 15 个字符）。网页不接受首设或免密重置。已有密码可继续使用，改密后其他网页会话立即失效。
+
+- **网页首页是「运行监控」**：首次从根地址登录、刷新根地址或打开未知书签都会进入监控台。第二项「模块巡检」按需处理、待验证、已就绪和已停用列出实际状态；注册或启用不等于已完成真实收发。
+- **DSH 设置默认打开「模块巡检」**。从条目进入对应设置，也可直接到网页安全、连接、聊天、插件或主人授权页面。
+- **QQ 官方机器人**默认停用，可在 DSH 主人设置中使用加密凭据或可选腾讯扫码 SDK 接入；独立网页只读连接状态。详见[配置与验收范围](docs/QQ_OFFICIAL_BOT.md)。
+- 对外访问请使用固定 HTTPS 来源、受控反向代理和认证器，后端仍只监听回环地址。[登录、恢复码与代理配置](docs/SECURITY.md)。
+
+「插件」下保留四个独立页面：
 
 - **表情包**：真实索引、图片代理、分类筛选、时间筛选、详情/删除、收集概率/冷却/排除词。
 - **QQ 空间**：真实 NapCat 空间读取、目标 QQ、时间排序、分页加载、设置；点赞/评论/图片接口未提供时明确标注。
@@ -312,34 +318,22 @@ npm test：核心回归与本机模拟网关。framework-ui-smoke.cjs、framewor
 
 启用步骤：插件管理 → 自主时间 → 选作用范围并启用 → 按需打开“自己发空间/自己翻空间/评论” → 主人与权限里启用 `plugin.qq-autonomy.diary-write`、`diary-read`、`run` 以及要用到的空间/联网/记忆动作。之后她会按时间表自己做事；你也可以说“现在写篇日记”“去学点东西”，或者用 `run` 动作手动安排一次。
 
-## 0.13.0：独立 Web 管理站点
-
-新增独立管理站点 **http://127.0.0.1:3097**，只监听本机，不需要经过 DSH 设置页就能完成日常管理；DSH 里的“QQ 框架”页提供同一套管理入口（主题跟随 DSH），并加了“独立管理站点”入口。
-
-- **登录安全**：首次打开设置管理密码（至少 10 位），scrypt 哈希保存到 `data/dsh-onebot-bridge/admin/admin.json`；会话 12 小时绝对过期、30 分钟无操作过期，HttpOnly + SameSite=Strict Cookie；所有写操作要求会话内 CSRF 令牌；登录每 IP 15 分钟最多 5 次失败；校验 Host 与 Origin，防 DNS rebinding 与跨站提交；严格 CSP、请求体上限、只监听 127.0.0.1。
-- **页面**：总览（在线状态、主人、动作、包、最近事件、诊断）、连接（OneBot 地址/Token/模型，测试连接）、聊天（范围、群参与方式、分条与预算）、监听（私聊/群/通知/请求）、权限（主人、逐项动作授权、只读特殊范围）、插件（内置包、原生包、声明式扩展的启停/范围/配置）、日志（运行日志、权限审计）、安全（改密码、会话说明）。
-- **安全边界**：管理站点只转发白名单内的桥接动作，不暴露 `invokeAction`、媒体上传、原始网关调用与任意代码执行；没有设置密码前任何人都只能看到设置页，设置后必须登录。
-- **反向代理**：要在手机或局域网访问，请在前面加 HTTPS 反向代理并保留 Host/Origin 校验；默认不要直接把 3097 暴露到公网。
-
-DSH 页与独立站点共用状态与权限，改任一处另一处刷新即可见。管理站点启动失败只记日志，不影响 QQ 桥接。
-
-管理站点采用「夜航控制台」视觉：暖墨底与灯火色、等宽字承载数据、衬线斜体只做点缀；桌面、窄屏和明暗主题分别排版。所有图形由 CSS 与内联 SVG 绘制，没有外部字体、图片或脚本，仍符合严格 CSP。
-
-## 参考与致谢
-
-这个框架没有从零发明协议和生态，很多设计是在下面这些项目的基础上学的。**只参考协议、思路与公开文档，代码全部独立实现，没有拷贝它们的源码或提示词。**
-
-- [OneBot 11 标准](https://github.com/botuniverse/onebot-11) —— 消息/事件模型、戳一戳等通知语义的权威定义。
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ) —— 我们实际对接的 QQ 协议实现，OneBot 服务端的能力边界以它为准。
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —— 运行平台：Agent、Session、工具守卫与压缩能力都由它提供。
-- Cordis（随 DSH 提供的插件与依赖注入框架）—— 本插件以 Cordis 行接入 DSH。
-- [qq-bridge（Derpyu520）](https://github.com/Derpyu520/qq-bridge) —— 注意力窗口、等待与未读管理、参与调度的思路来源；本项目的续聊与参与判断是独立实现。
-- [AstrBot](https://github.com/AstrBotDevs/AstrBot) —— 唤醒检查（是否该接话）的思路参考。
-- [astrbot_plugin_qzone_ultra](https://github.com/diaomin66/astrbot_plugin_qzone_ultra) —— QQ 空间接口用法的参考。
-- [Node.js HTTPS / DNS 文档](https://nodejs.org/api/https.html) —— 联网查资料插件的出站请求与 DNS 校验实现依据。
-
-感谢这些项目的作者和维护者把工作公开出来。如果这里有遗漏的致谢，欢迎提 issue 指正。
-
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。
+本仓库自有代码采用 [MIT 许可证](LICENSE)。第三方库、可选 SDK 和服务分别适用其自身的许可证或服务条款；下列致谢不代表上游授权或背书。
+
+## 使用的项目与致谢
+
+| 项目 | 在本项目中的用途 |
+| --- | --- |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 提供 Agent、Session、工具以及 DSH 设置宿主；通过 `@deepseek-ai/cordis` 接入插件，用 `@deepseek-ai/schemastery` 描述配置。 |
+| [Node.js](https://nodejs.org/) / [SQLite](https://sqlite.org/) | Node.js 承载管理站点和桥接；`node:sqlite` 为长期记忆及运行监控的本地账本提供持久化。 |
+| [OneBot 11](https://github.com/botuniverse/onebot-11)、[NapCatQQ](https://github.com/NapNeko/NapCatQQ)、[ws](https://github.com/websockets/ws) | 分别是 QQ 消息与事件协议、可单独运行的网关，以及桥接的 WebSocket 库。 |
+| [node-qrcode](https://github.com/soldair/node-qrcode)、[three.js](https://github.com/mrdoob/three.js) | 前者生成扫码图和认证器绑定二维码；后者渲染基于真实记忆节点的 3D 星图。 |
+| [Playwright](https://github.com/microsoft/playwright) | `playwright-core` 驱动媒体浏览器及隔离环境的真实页面验收，不随本项目分发浏览器。 |
+| [fflate](https://github.com/101arrowz/fflate)、[PDF.js](https://github.com/mozilla/pdf.js)、[FFmpeg](https://ffmpeg.org/) | 用于插件市场 ZIP 包与文档解包、PDF 文本提取，以及按需调用本机媒体转码工具。 |
+| [腾讯 QQ Bot Connector](https://www.npmjs.com/package/@tencent-connect/qqbot-connector) | QQ 官方机器人扫码流程的可选 SDK，集成方式参考 [dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot)。SDK 1.2.0 的包元数据标为 `UNLICENSED`，本仓库不附带其源码；详见[授权说明](docs/QQ_QR_SDK_AUTHORIZATION_RESEARCH.md)。 |
+
+**设计与接口参考**：[Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 启发了参与调度和未读管理；[AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供了判断是否接话的思路；[astrbot_plugin_qzone_ultra](https://github.com/diaomin66/astrbot_plugin_qzone_ultra) 提供了 QQ 空间接口用法参考。媒体插件的功能边界和生命周期参考了 c1overzz 的 `dsh-bili-scroll`、LockyBee 与贡献者的 `dsh-douyin-agent`，详见[媒体插件来源说明](src/builtins/media-agent/NOTICE.md)。
+
+感谢以上项目的作者、贡献者和维护者。是你们持续维护的协议、工具、文档与实践，让这座桥和夜航控制台得以运行。

@@ -20,6 +20,10 @@
       "type": "string",
       "title": "QQ 官方 API 地址",
       "default": "https://api.sgroup.qq.com",
+      "enum": [
+        "https://api.sgroup.qq.com",
+        "https://sandbox.api.sgroup.qq.com"
+      ],
       "maxLength": 200
     },
     "sandbox": {
@@ -70,7 +74,7 @@
   },
   "settings": {
     "title": "QQ 官方机器人",
-    "description": "QQ 官方机器人支持腾讯官方二维码绑定和手动 AppID/AppSecret 配置；凭据只保存在 DSH credentials。",
+    "description": "QQ 官方机器人支持腾讯官方二维码绑定和手动 AppID/AppSecret 配置；凭据加密保存，设备密钥由 DSH credentials 管理。",
     "sections": [
       {
         "title": "连接与回复",

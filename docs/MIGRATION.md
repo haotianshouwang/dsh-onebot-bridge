@@ -16,6 +16,7 @@
 | QQ 空间 | `qq-qzone` | `src/builtins/qzone/` | 空间正文不落盘；`qzone/admin-status.json` 只存状态 |
 | 长期记忆 | `qq-memory` | `src/builtins/memory/` | `data/.../memory/memory.db` |
 | 自主时间 | `qq-autonomy` | `src/builtins/autonomy/` | `autonomy/state.json`、`diary.jsonl`、`activities.jsonl` |
+| QQ 官方机器人 | `qq-official-bot` | `src/builtins/qq-official/` | 插件存储中加密的凭据 + 独立 DSH 设备密钥 |
 | 声明式扩展 | `<package-id>` | `data/.../extensions/<id>/` | 原目录 + `state.extensions[id]` |
 | 市场包 | `<package-id>` | zip → 安装目录 | 与声明式扩展相同 |
 
@@ -76,10 +77,18 @@ configMigrations: [
 - 旧版本不缓存正文；升级后第一次同步会建立缓存。`retentionMode:'none'` 默认不主动删除。
 - 动态按 `friendId:postId` 去重；同一好友的重复同步不会重复插入。
 
-### 4.4 管理密码
+### 4.5 管理密码
 
-- `admin/admin.json` 结构未变（scrypt + salt）。
-- 管理会话在进程重启后失效；秘密空间解锁状态也会失效。
+- 升级前关闭外部入口并停机，将 **`admin/admin.json` 与对应的 DSH profile 凭据库成对备份**，安全保管；沿用原数据目录、插件 ID 和配置。勿把备份、设备密钥或恢复码提交仓库。
+- 原 v1 scrypt 记录（N=16384）继续可在本机登录。新密码或在网页「安全」改密使用 v2、N=131072；只绑定认证器也会写 v2，但不修改旧密码成本。v2 的 `mfa` 为空或含加密种子、上次使用的时间计数和未用恢复码的摘要；解封需要同一 DSH 凭据 `QQBOT_ADMIN_MFA_DEVICE_KEY`。私密空间 KDF 与磁盘格式不变。
+- 切换 HTTPS 之前在 DSH「网页安全」完成绑定并离线保存恢复码，再打开受控代理。凭据或认证文件损坏时恢复匹配的备份，不要删除文件重新初始化。重启后原网页会话及对应的秘密空间解锁状态失效。
+- **回滚**：先关闭对外入口并停机，恢复兼容版本和当时的整套备份；不要把 v2 记录交给不理解 MFA 的旧版本当作安全降级。恢复旧快照可能回退验证码计数、让已用恢复码再次生效；重新开放外部访问前，必须使用支持 MFA 的版本、在 DSH **更换认证器并重新领取恢复码**。
+
+### 4.6 QQ 官方机器人
+
+- 保留旧 `qq-official-bot` ID、目录及配置。旧部署凭据引用和环境变量仍可读取；建议在 DSH 插件设置重新保存 AppID / AppSecret，或重新扫码绑定。保存成功后优先使用加密凭据，并清理旧本地引用。不要通过原聊天动作重新提交密钥；如果此前把密钥发到聊天中，请到 QQ 开放平台轮换。
+- 旧自定义 API 地址会使该插件的配置校验失败；在 DSH 插件设置选择官方生产或沙箱地址并保存后再启用，不需要重置其他配置。
+- 备份插件数据时同时保留相应 DSH profile 凭据库。回滚到不识别新加密记录的版本时，不要导出或公开密文/设备密钥；从 QQ 开放平台或部署密钥管理安全地重新配置所需凭据。清除本地凭据不会删除启动环境中的值。
 
 ## 5. 插件升级顺序
 

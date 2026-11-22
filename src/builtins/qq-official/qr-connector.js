@@ -16,7 +16,7 @@ async function loadSdk() {
 }
 
 function errorText(error) {
-  return String(error?.message || error || 'QQ 二维码登录失败').replace(/\s+/g, ' ').slice(0, 240);
+  return error?.code === 'ERR_MODULE_NOT_FOUND' ? '未安装可选的 QQ 二维码 SDK；可改用 AppID/AppSecret' : 'QQ 二维码绑定失败，请检查 SDK、网络与应用授权后重试';
 }
 
 export class QQQrConnector {
@@ -47,7 +47,7 @@ export class QQQrConnector {
 
   async start({source = DEFAULT_SOURCE} = {}) {
     if (this.running) throw new Error('已有 QQ 二维码登录会话正在运行');
-    if (this.stopFn) this.stopFn();
+    this.stopCurrentTask();
     const generation = ++this.generation;
     this.activeGeneration = generation;
     this.stopFn = null;
@@ -59,7 +59,7 @@ export class QQQrConnector {
       if (typeof sdk?.startQrConnect !== 'function') throw new Error('QQ 二维码 SDK 缺少 startQrConnect 接口');
       const stop = sdk.startQrConnect({
         onQrDisplayed: url => {
-          if (generation !== this.activeGeneration) return;
+          if (generation !== this.activeGeneration || this.current.state === QR_STATES.SCANNED) return;
           this.publish({state: QR_STATES.WAITING_SCAN, qrUrl: String(url || ''), error: ''});
         },
         onSuccess: credentials => {
@@ -67,11 +67,11 @@ export class QQQrConnector {
           void this.complete(generation, credentials);
         },
         onFailure: error => {
-          if (generation !== this.activeGeneration) return;
+          if (generation !== this.activeGeneration || this.current.state === QR_STATES.SCANNED) return;
           this.fail(generation, error);
         },
         onQrExpired: () => {
-          if (generation !== this.activeGeneration) return;
+          if (generation !== this.activeGeneration || this.current.state === QR_STATES.SCANNED) return;
           this.publish({state: QR_STATES.EXPIRED, qrUrl: ''});
         }
       }, {displayQrCodeToConsole: false, source});
@@ -80,7 +80,7 @@ export class QQQrConnector {
         stop();
         return this.snapshot();
       }
-      if ([QR_STATES.AUTHENTICATED, QR_STATES.FAILED, QR_STATES.CANCELLED].includes(this.current.state)) {
+      if (this.current.state === QR_STATES.SCANNED) {
         stop();
         return this.snapshot();
       }
@@ -94,10 +94,15 @@ export class QQQrConnector {
 
   async complete(generation, credentials) {
     if (generation !== this.activeGeneration) return;
+    if (this.current.state === QR_STATES.SCANNED) return;
+    this.publish({state: QR_STATES.SCANNED, qrUrl: '', error: ''});
     this.stopCurrentTask();
-    this.publish({state: QR_STATES.AUTHENTICATED, qrUrl: '', error: ''});
     try {
       await this.onSuccess(credentials);
+      if (generation === this.activeGeneration) {
+        this.activeGeneration = 0;
+        this.publish({state: QR_STATES.AUTHENTICATED, qrUrl: '', error: ''});
+      }
     } catch (error) {
       this.fail(generation, error);
     }
@@ -105,6 +110,7 @@ export class QQQrConnector {
 
   fail(generation, error) {
     if (generation !== this.activeGeneration) return;
+    this.activeGeneration = 0;
     this.stopCurrentTask();
     this.publish({state: QR_STATES.FAILED, qrUrl: '', error: errorText(error)});
   }

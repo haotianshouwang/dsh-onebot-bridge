@@ -9,14 +9,19 @@
 
 ## 2. 管理站点
 
-- 只监听 `127.0.0.1`，校验远端地址、Host、Origin。
-- 密码使用 scrypt（N=16384,r=8,p=1）哈希，salt 随机 16 字节；文件 `admin.json`。
-- 会话：HttpOnly + SameSite=Strict Cookie，12 小时绝对过期、30 分钟空闲过期。
-- 写请求必须 CSRF；登录失败 15 分钟 5 次限速；请求体上限 256 KiB。
-- CSP：`default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'`。
-- 不使用内联脚本、外部字体/CDN、`eval`、任意跳转。
-- 密码修改后销毁所有旧会话；退出登录锁定该会话的秘密空间。
-- 远程访问必须由用户自己加 HTTPS 反向代理；不要直接改监听地址为 `0.0.0.0`。
+### 首次设置与日常登录
+
+1. 用 **DSH 管理身份**打开「设置 → QQ 框架 → 网页安全」，设置独立密码。没有默认密码，网页 `/api/setup` 始终拒绝初始化。这里的主人是 DSH Connection 认证的 `owner`，不是聊天中的主人 QQ；DSH 的精确 Fetch 路由不向其他身份分发。
+2. 使用密码管理器生成独有密码，或使用长口令。新密码要求 15–200 个 Unicode 字符，拒绝常见弱口令；新建和改密均使用 scrypt（N=131072，r=8，p=1）、16 字节随机盐和 32 字节哈希。旧记录仍可校验；**改密时**升级成本，不需要清空认证文件。
+3. 在同页绑定认证器：扫码或手动录入，用 6 位验证码确认。绑定过程限时 5 分钟；确认后取得 8 枚单次恢复码，仅显示一次，应离线保管。已绑定时，本机 HTTP 和 HTTPS 登录均需「密码 + 验证码或恢复码」。验证码按 30 秒计数并拒绝重放；恢复码仅存摘要，使用即消费。更换认证器会废止旧验证码、旧恢复码和所有网页会话。
+4. TOTP 种子用 AES-256-GCM 加密；`admin/admin.json` 只存密文、最近使用的计数器与恢复码摘要。32 字节设备密钥存于独立 DSH 凭据 `QQBOT_ADMIN_MFA_DEVICE_KEY`，不是角色秘密空间的密钥。认证文件损坏、已绑定却无法解密时拒绝登录和重新初始化。恢复步骤见[迁移文档](MIGRATION.md#45-管理密码)。
+
+### 网络与会话
+
+- 默认 HTTP 只监听 `127.0.0.1:3097`，校验连接来自回环、Host 和浏览器 Origin。已登录的 POST 操作须携带会话内 CSRF 令牌；请求体上限 256 KiB。登录失败按实际连接来源 15 分钟最多 5 次，不信任客户端声明的 IP；同一反代后的客户端共享这项限制。
+- 如需远程访问：**先在 DSH 绑定认证器**，配置同一台机器上的受控 HTTPS 反向代理并设置 `QQBOT_ADMIN_ORIGIN` 为唯一外部来源（例如 `https://admin.example.com`，不带路径）。此变量**不提供 TLS**。代理负责证书与 TLS，只在确实收到 HTTPS 请求且域名匹配时转发到回环；丢弃客户端提供的转发头，覆盖上游 `Host` 为固定外部主机（含非默认端口）、`X-Forwarded-Proto` 为 `https`，保留浏览器原始 `Origin` 供比对。不得直接对外暴露 3097、使用任意 Host 或关闭校验。未绑定时 HTTPS 模式拒绝登录。
+- 会话仅在内存中：12 小时绝对期限，30 分钟空闲期限。Cookie 为 `HttpOnly; SameSite=Strict; Path=/`；HTTPS 模式使用无 `Domain` 的 `__Host-qqadmin; Secure` 和 HSTS。改密销毁所有旧会话，只为当前设备签发新会话。退出、过期、撤销会话时锁定其秘密空间；若断网退出，页面立即清空私密内容并锁屏，**未获服务端确认前**会提示重试。DSH 可撤销全部网页会话。
+- 严格 CSP：脚本/样式/连接只允许同源，图片只允许同源和 data URI；不使用外部字体/CDN、`eval` 或任意跳转。不要记录认证请求体、二维码、种子、恢复码、密码、Cookie 或 CSRF 令牌。
 
 ## 3. 私密秘密空间
 
@@ -65,6 +70,7 @@
 ## 4. 密钥与凭据
 
 - OneBot Token 存在 DSH credentials / 状态中，界面只显示“已配置”，不回显。
+- QQ 官方机器人的 AppID 和 AppSecret 仅通过已认证的 DSH 主人设置管理，成对用 AES-256-GCM 加密，设备密钥 `DSH_QQ_OFFICIAL_DEVICE_KEY` 单独由 DSH credentials 管理。独立网页和聊天工具不能写入凭据或获得绑定二维码。官方令牌和二维码不得入日志；部署环境变量由运维管理。详见[官方机器人配置](QQ_OFFICIAL_BOT.md)。
 - 嵌入模型密钥：界面不回显；保存时用 `preserveSecrets:['embeddingKey']` 保留未修改值；勾选清除才删除。
 - 空间 Cookie 只通过 NapCat `get_cookies` 临时使用，不持久化、不返回前端、不入日志。
 - QQ 空间缓存 `qzone/feed.json` 保存真实好友动态、评论和图片 URL，属于高敏感用户数据；不要发布、截图或纳入备份分享。图片经 `/api/qzone-image` 域名白名单代理，头像经 `/api/qzone-avatar` 代理。

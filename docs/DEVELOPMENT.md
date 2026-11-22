@@ -41,7 +41,19 @@ F:\大肥鱼\verify.cmd
 - NapCat WebUI：<http://127.0.0.1:6099/webui>
 - OneBot：`ws://127.0.0.1:3001`
 
-控制台第一次打开需要设置管理密码（至少 10 位）；密码只保存 scrypt 哈希。修改 `src/web/public/` 下的页面不需要重启，刷新即可；修改 `src/host/`、`src/web/admin-server.js` 或插件逻辑需要重载 DSH 插件/重启服务。
+首次使用由已认证的 DSH 主人在「设置 → QQ 框架 → 网页安全」创建独立管理密码；新密码为 15–200 个字符并保存为 scrypt 哈希。网页不能自行首设或绕过 DSH 重置。修改 `src/web/public/` 下的页面不需要重启，刷新即可；修改 `src/host/`、`src/web/admin-server.js` 或插件逻辑需要重载 DSH 插件/重启服务。
+
+### 隔离浏览器验收
+
+设置改版可在临时 DSH profile、临时数据目录和随机认证凭据中进行端到端验收。测试禁用 OneBot、阻断非回环网络，不连接真实 QQ 账号或模型；HTTPS 验收使用仅供当前运行的临时证书。需要兼容版本的已安装 DSH、Edge 和 OpenSSL：
+
+```powershell
+$env:DSH_PREVIEW_CLI = "<DSH 安装目录>\node_modules\@deepseek-ai\dsh\lib\bin.js"
+$env:OPENSSL_BIN = "<Git 安装目录>\usr\bin\openssl.exe"
+node scripts/verify-settings-real.mjs
+```
+
+脚本报告只记录验收断言、模块 ID 与必要的结构检查，不保存截图、响应正文、密码、认证器种子、恢复码、令牌或 Cookie。它不会更改生产 profile 或部署源码副本。
 
 ## 5. 开发模式与生产模式
 
@@ -89,7 +101,7 @@ npm run check:manifests
 ## 7. 前端验收
 
 1. 打开 `http://127.0.0.1:3097/` 并登录。
-2. 依次打开总览、连接、聊天、监听、权限、插件、四个功能包、日志、安全。
+2. 确认根地址默认显示运行监控，再依次打开模块巡检、连接、聊天、监听、权限、插件、四个专属管理页、日志、安全。
 3. 检查浏览器控制台没有 CSP、404、未捕获异常。
 4. 在 1440×900 和 1024×768 检查无水平溢出；窄窗口下侧栏折叠为顶部导航。
 5. 检查空状态、请求失败状态、保存后重新读取的值。

@@ -23,7 +23,7 @@ test('自由模式放开业务预算，不改变停用和明确的群参与范�
 test('真实群背景触发冷场判断，发送后持久化去重；生成中有新消息则取消', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'group-social-'));
   t.after(() => rm(dir, {recursive: true, force: true}));
-  let now = Date.now();
+  let now = new Date(2026, 4, 12, 12).getTime();
   const rows = [{time: (now - 2 * 3600000) / 1000, user: '12345', text: '刚才聊的天文话题'}];
   const sent = [];
   let allowed = true, changed = false;
@@ -56,7 +56,7 @@ test('真实群背景触发冷场判断，发送后持久化去重；生成中�
 test('群冷场开口后无人接话，不因换种措辞或重启再翻同一件旧事', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'group-no-monologue-'));
   t.after(() => rm(dir, {recursive: true, force: true}));
-  let now = Date.now(), calls = 0;
+  let now = new Date(2026, 4, 12, 12).getTime(), calls = 0;
   const rows = [{id: 'human1', user: 'other', text: '头盔扛不住', time: (now - 2 * 3600000) / 1000}];
   const sent = [];
   const options = {
@@ -81,7 +81,7 @@ test('群冷场开口后无人接话，不因换种措辞或重启再翻同一�
 test('群主动提示保留真实发言者、身份和时间，不冒充私聊主人', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'group-audience-'));
   t.after(() => rm(dir, {recursive: true, force: true}));
-  const now = Date.now();
+  const now = new Date(2026, 4, 12, 12).getTime();
   let captured = '';
   const p = new GroupProactive({
     dir, groups: () => ['123456'], eligible: () => true, bot: () => 'bot', isOwner: id => id === 'owner',

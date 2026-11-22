@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {manifest as qqOfficial} from '../src/builtins/qq-official/index.js';
 import {manifest as sticker} from '../src/builtins/sticker/index.js';
 import {manifest as qzone} from '../src/builtins/qzone/index.js';
 import {manifest as memory} from '../src/builtins/memory/index.js';
@@ -14,7 +15,7 @@ import {validatePackageMetadata, PACKAGE_API_VERSION} from '../src/core/package-
 const root = path.dirname(fileURLToPath(import.meta.url));
 
 test('源码插件都有同步的 manifest.json 镜像', async () => {
-  for (const manifest of [sticker, qzone, memory, autonomy, emotion, mediaAgent]) {
+  for (const manifest of [sticker, qzone, memory, autonomy, emotion, mediaAgent, qqOfficial]) {
     const file = path.join(root, '..', manifest.entry.replace(/index\.js$/, 'manifest.json'));
     const json = JSON.parse(await readFile(file, 'utf8'));
     const expected = JSON.parse(JSON.stringify({

@@ -1,9 +1,9 @@
-import {DEFAULT_API_BASE_URL, DEFAULT_INTENTS, QQOfficialClient} from './client.js';
+import {DEFAULT_API_BASE_URL, DEFAULT_INTENTS, DEFAULT_SANDBOX_API_BASE_URL, QQOfficialClient} from './client.js';
 import {QQQrConnector, QR_STATES} from './qr-connector.js';
 import QRCode from 'qrcode';
-
-const APP_ID_REF = 'DSH_QQ_OFFICIAL_APP_ID';
-const CLIENT_SECRET_REF = 'DSH_QQ_OFFICIAL_CLIENT_SECRET';
+import {once} from 'node:events';
+import {officialCredentials} from './credentials.js';
+export {APP_ID_REF, CLIENT_SECRET_REF} from './credentials.js';
 
 export const manifest = {
   id: 'qq-official-bot',
@@ -18,7 +18,7 @@ export const manifest = {
   configVersion: 1,
   capabilities: ['actions', 'storage'],
   configSchema: {
-    apiBaseUrl: {type: 'string', title: 'QQ 官方 API 地址', default: DEFAULT_API_BASE_URL, maxLength: 200},
+    apiBaseUrl: {type: 'string', title: 'QQ 官方 API 地址', default: DEFAULT_API_BASE_URL, enum: [DEFAULT_API_BASE_URL, DEFAULT_SANDBOX_API_BASE_URL], maxLength: 200},
     sandbox: {type: 'boolean', title: '使用沙箱 API', default: false},
     autoConnect: {type: 'boolean', title: '启用后自动连接', default: true},
     autoReply: {type: 'boolean', title: '收到消息后交给 DSH AI 回复', default: true},
@@ -29,15 +29,10 @@ export const manifest = {
   },
   settings: {
     title: 'QQ 官方机器人',
-    description: 'QQ 官方机器人支持腾讯官方二维码绑定和手动 AppID/AppSecret 配置；凭据只保存在 DSH credentials。',
+    description: 'QQ 官方机器人支持腾讯官方二维码绑定和手动 AppID/AppSecret 配置；凭据加密保存，设备密钥由 DSH credentials 管理。',
     sections: [{title: '连接与回复', fields: ['apiBaseUrl', 'sandbox', 'autoConnect', 'autoReply', 'replyMaxChars', 'intents', 'allowedUsers', 'allowedGroups']}]
   }
 };
-
-function credentialValue(credentials, key) {
-  const fallback = key === APP_ID_REF ? (process.env.DSH_QQ_OFFICIAL_APP_ID || process.env.QQBOT_APP_ID || '') : (process.env.DSH_QQ_OFFICIAL_CLIENT_SECRET || process.env.QQBOT_APP_SECRET || '');
-  return credentials.resolve(key).then(result => String(result?.value || fallback));
-}
 
 function configuredStatus(appId, secret) {
   return Boolean(appId && secret);
@@ -53,20 +48,22 @@ export function selectQrCredentials(credentialsList) {
   throw new Error('QQ 二维码 SDK 未返回有效 AppID/AppSecret');
 }
 
-export function activateQQOfficial(framework, {credentials, log = () => {}, generateReply, onReplySent, fetchImpl = globalThis.fetch, WebSocketImpl, qrSdkLoader} = {}) {
+export function activateQQOfficial(framework, {credentials, log = () => {}, generateReply, onReplySent, repliesAllowed = () => true, generation = () => 0, fetchImpl = globalThis.fetch, WebSocketImpl, qrSdkLoader} = {}) {
   if (!credentials?.resolve || !credentials?.set || !credentials?.unset) throw new Error('QQ 官方机器人缺少 DSH credentials 服务');
   const api = framework.registerTrustedPackage(manifest);
   const client = new QQOfficialClient({fetchImpl, WebSocketImpl, log});
-  let processing = 0;
-  let qrPresentation = {state: QR_STATES.IDLE, qrUrl: '', qrImage: '', error: '', startedAt: 0, updatedAt: 0, running: false};
-
-  const state = () => {
-    const value = api.storage.get();
-    return value && typeof value === 'object' ? value : {};
+  let processing = 0, disposed = false, manualStop = false, previouslyActive = false;
+  let lastReplyError = '', qrPresentation = null;
+  let lifetime = new AbortController(), syncJob = null, credentialTail = Promise.resolve();
+  const active = () => !disposed && api.active();
+  const requireActive = () => { if (!active()) api.reject('请先在插件设置中启用 QQ 官方机器人'); };
+  const stopTransport = () => {
+    qrPresentation = null; lastReplyError = '';
+    lifetime.abort(); lifetime = new AbortController();
+    void client.stop(); // stop synchronously invalidates pending token, Gateway and send calls.
+    client.configure({appId: '', clientSecret: ''});
   };
-  const updateState = updater => api.storage.update(data => ({...data, ...updater(data)}));
-  const credentialsForClient = async () => ({appId: await credentialValue(credentials, APP_ID_REF), clientSecret: await credentialValue(credentials, CLIENT_SECRET_REF)});
-  const persistedQrStatus = status => ({state: status.state, error: status.error || '', startedAt: status.startedAt || 0, updatedAt: status.updatedAt || 0, running: status.running === true});
+  const {read: credentialsForClient, write: savePair} = officialCredentials(api.storage, credentials);
   const qrConnector = new QQQrConnector({
     sdkLoader: qrSdkLoader,
     onChange: status => {
@@ -75,144 +72,123 @@ export function activateQQOfficial(framework, {credentials, log = () => {}, gene
         if (status.qrUrl) {
           try { qrImage = await QRCode.toDataURL(status.qrUrl, {errorCorrectionLevel: 'M', margin: 2, width: 320}); } catch {}
         }
-        if (qrConnector.snapshot().updatedAt !== status.updatedAt) return;
-        qrPresentation = {...status, qrImage};
-        await updateState(() => ({qrLogin: persistedQrStatus(status)}));
+        const latest = qrConnector.snapshot();
+        if (!active() || latest.state !== status.state || latest.qrUrl !== status.qrUrl || latest.updatedAt !== status.updatedAt) return;
+        qrPresentation = {qrUrl: status.qrUrl, qrImage};
       })().catch(() => {});
     },
-    onSuccess: credentialsList => completeQrLogin(credentialsList)
+    onSuccess: credentialsList => completeQrLogin(credentialsList, lifetime.signal)
   });
 
-  const configureClient = async () => {
+  async function configureClient(signal) {
     const saved = await credentialsForClient();
+    signal.throwIfAborted(); requireActive();
     const config = api.getConfig();
-    const apiBaseUrl = config.sandbox ? 'https://sandbox.api.sgroup.qq.com' : config.apiBaseUrl;
-    client.configure({appId: saved.appId, clientSecret: saved.clientSecret, apiBase: apiBaseUrl, intents: config.intents});
-    return saved;
-  };
-
-  const waitForReady = (timeoutMs = 30000) => {
-    if (client.connected) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      let timer;
-      const cleanup = () => {
-        clearTimeout(timer);
-        client.off('status', onStatusReady);
-      };
-      const onStatusReady = status => {
-        if (status.connected === true) {
-          cleanup();
-          resolve();
-          return;
-        }
-        if (status.lastError && status.state === 'disconnected') {
-          cleanup();
-          reject(new Error(status.lastError));
-        }
-      };
-      timer = setTimeout(() => {
-        cleanup();
-        reject(new Error('QQ 官方 Gateway 等待 READY 超时'));
-      }, timeoutMs);
-      client.on('status', onStatusReady);
-    });
-  };
-
-  async function completeQrLogin(credentialsList) {
-    await updateState(() => ({qrLogin: {...qrConnector.snapshot(), state: QR_STATES.AUTHENTICATED}, lastStatus: 'authorizing', lastError: ''}));
-    const selected = selectQrCredentials(credentialsList);
-    await credentials.set(APP_ID_REF, selected.appId);
-    await credentials.set(CLIENT_SECRET_REF, selected.clientSecret);
-    await configureClient();
-    client.start();
-    await updateState(() => ({lastStatus: 'connecting', lastError: ''}));
-    await waitForReady();
-    await updateState(() => ({lastStatus: 'online', lastError: ''}));
+    client.configure({...saved, apiBase: config.sandbox ? DEFAULT_SANDBOX_API_BASE_URL : config.apiBaseUrl, intents: config.intents});
+    return configuredStatus(saved.appId, saved.clientSecret);
   }
 
-  const onStatus = status => {
-    void updateState(() => ({
-      lastStatus: status.connected ? 'online' : status.state || 'offline',
-      botName: status.botName || state().botName || '',
-      gateway: status.gateway || state().gateway || '',
-      lastError: status.lastError || ''
-    })).catch(() => {});
-  };
-  client.on('status', onStatus);
+  // Pair writes from owner controls and QR callbacks cannot interleave.
+  function writeCredentials(pair, signal) {
+    const job = credentialTail.then(async () => {
+      signal.throwIfAborted(); requireActive();
+      try { await savePair(pair, signal); }
+      catch { throw new Error('无法保存官方机器人凭据，请检查存储和设备密钥'); }
+      signal.throwIfAborted();
+    });
+    credentialTail = job.catch(() => {});
+    return job;
+  }
 
-  const handleEvent = async event => {
-    if (!api.active() || api.getConfig().autoReply !== true || !event?.text || typeof generateReply !== 'function') return;
+  async function completeQrLogin(credentialsList, signal) {
+    await writeCredentials(selectQrCredentials(credentialsList), signal);
+    signal.throwIfAborted();
+    stopTransport(); manualStop = false;
+    const run = lifetime.signal;
+    await connect();
+    const wait = AbortSignal.any([run, AbortSignal.timeout(30000)]);
+    while (!client.connected) {
+      const [status] = await once(client, 'status', {signal: wait});
+      if (status.lastError) throw new Error('QQ 官方 Gateway 未就绪');
+    }
+  }
+
+  const mayReply = event => {
+    if (!active() || !repliesAllowed() || !client.connected || !event?.text || !event.messageId || !event.peer || !event.actor || api.getConfig().autoReply !== true) return false;
     const config = api.getConfig();
     const allowedUsers = Array.isArray(config.allowedUsers) ? config.allowedUsers : [];
     const allowedGroups = Array.isArray(config.allowedGroups) ? config.allowedGroups : [];
-    if (event.kind === 'private' && allowedUsers.length && !allowedUsers.includes(event.actor)) return;
-    if (event.kind === 'group' && allowedGroups.length && !allowedGroups.includes(event.peer)) return;
-    if (event.kind === 'channel' && allowedGroups.length && !allowedGroups.includes(`${event.guildId}-${event.channelId}`)) return;
-    processing += 1;
+    if (event.kind === 'private' && allowedUsers.length && !allowedUsers.includes(event.actor)) return false;
+    if (event.kind === 'group' && allowedGroups.length && !allowedGroups.includes(event.peer)) return false;
+    if (event.kind === 'channel' && (!event.guildId || !event.channelId || (allowedGroups.length && !allowedGroups.includes(event.peer)))) return false;
+    return true;
+  };
+  const handleEvent = async event => {
+    if (!mayReply(event) || typeof generateReply !== 'function' || processing >= 4) return;
+    const signal = lifetime.signal, ticket = generation();
+    processing++;
     try {
-      const reply = await generateReply({text: event.text, event});
-      if (reply) {
-        const result = await client.sendText(event.target, String(reply).trim(), event.reply, config.replyMaxChars);
-        await onReplySent?.({event, reply: String(reply).trim(), result});
+      const reply = await generateReply({text: event.text, signal});
+      if (signal.aborted || ticket !== generation() || !mayReply(event) || !reply?.trim()) return;
+      const text = [...reply.trim()].slice(0, api.getConfig().replyMaxChars).join('');
+      const result = await client.sendText(event.target, text, event.reply, api.getConfig().replyMaxChars);
+      lastReplyError = '';
+      await onReplySent?.({messageId: result});
+    } catch {
+      if (!signal.aborted && active()) {
+        lastReplyError = '处理消息失败，请检查模型与 Gateway 状态';
+        log('warn', 'QQ 官方消息处理失败');
       }
-      await updateState(() => ({lastStatus: 'online', lastError: ''}));
-    } catch (error) {
-      const saved = await credentialsForClient();
-      const detail = String(error?.message || error).replaceAll(saved.clientSecret || '\u0000', '[凭据已隐藏]').replace(/\s+/g, ' ').slice(0, 240);
-      await updateState(() => ({lastStatus: 'reply_error', lastError: detail}));
-      log('warn', 'QQ 官方消息处理失败');
-    } finally {
-      processing = Math.max(0, processing - 1);
-    }
+    } finally { processing--; }
   };
-  client.on('event', event => { void handleEvent(event); });
+  client.on('event', event => { void handleEvent(event).catch(() => {}); });
 
-  const connect = async () => {
-    const saved = await configureClient();
-    if (!configuredStatus(saved.appId, saved.clientSecret)) throw new Error('请先配置 QQ 官方机器人 AppID 和 AppSecret');
-    client.start();
-    await updateState(() => ({lastStatus: 'connecting', lastError: ''}));
-    return {ok: true, status: 'connecting'};
-  };
-
-  const disconnect = async () => {
-    await client.stop();
-    await updateState(() => ({lastStatus: 'stopped', lastError: ''}));
+  async function connect() {
+    requireActive();
+    if (!await configureClient(lifetime.signal)) api.reject('请先在 DSH 插件设置保存 QQ 官方机器人凭据');
+    manualStop = false; client.start();
+    return {ok: true, status: client.connected ? 'connected' : 'connecting'};
+  }
+  async function disconnect() {
+    manualStop = true; qrConnector.stop(); stopTransport();
     return {ok: true, status: 'stopped'};
-  };
+  }
 
-  api.action('set-credentials', {description: '仅主人：保存或清除 QQ 官方机器人 AppID/AppSecret。密钥不会写入插件配置或日志。', ownerOnly: true, mutating: true, timeoutMs: 10000, parameters: {type: 'object', properties: {appId: {type: 'string', minLength: 1, maxLength: 128}, clientSecret: {type: 'string', minLength: 1, maxLength: 256}, clear: {type: 'boolean'}}, additionalProperties: false}}, async args => {
-    qrConnector.cancel();
-    if (args.clear === true) {
-      await credentials.unset(APP_ID_REF);
-      await credentials.unset(CLIENT_SECRET_REF);
-      await disconnect();
-      return {ok: true, configured: false};
+  // Credential entry and QR presentations belong to the authenticated DSH owner UI,
+  // not chat history, a model tool result, or the independent web action whitelist.
+  async function ownerControl({op, appId, clientSecret}) {
+    requireActive();
+    if (op === 'credentials') {
+      if (typeof appId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(appId) || typeof clientSecret !== 'string' || !clientSecret.trim() || clientSecret.length > 256) api.reject('请填写有效的 AppID 和 AppSecret');
+      await disconnect(); await writeCredentials({appId, clientSecret}, lifetime.signal);
+      manualStop = false; await sync();
+      return {configured: true};
     }
-    if (!args.appId || !args.clientSecret) api.reject('保存凭据时必须同时填写 AppID 和 AppSecret');
-    await credentials.set(APP_ID_REF, String(args.appId));
-    await credentials.set(CLIENT_SECRET_REF, String(args.clientSecret));
-    await updateState(() => ({lastStatus: 'configured', lastError: ''}));
-    return {ok: true, configured: true};
-  });
+    if (op === 'clear') {
+      await disconnect(); await writeCredentials(null, lifetime.signal);
+      return {ok: true};
+    }
+    if (op === 'connect') return connect();
+    if (op === 'disconnect') return disconnect();
+    if (op === 'qr-start') {
+      if (qrConnector.running) api.reject('已有二维码会话，请刷新状态或取消绑定');
+      await disconnect(); try { await qrConnector.start(); } catch { api.reject(qrConnector.snapshot().error || '二维码绑定失败'); }
+    }
+    else if (op === 'qr-cancel') { qrConnector.cancel(); manualStop = true; stopTransport(); }
+    else if (op !== 'qr-status') api.reject('不支持的官方机器人设置操作');
+    const qr = qrConnector.snapshot();
+    return {state: qr.state, running: qr.running, error: qr.error, qrImage: qr.qrUrl && qr.qrUrl === qrPresentation?.qrUrl ? qrPresentation.qrImage : ''};
+  }
 
-  api.action('connect', {description: '仅主人：连接 QQ 官方机器人 Gateway。', ownerOnly: true, mutating: true, timeoutMs: 20000, parameters: {type: 'object', properties: {}, additionalProperties: false}}, async () => connect());
-  api.action('disconnect', {description: '仅主人：断开 QQ 官方机器人 Gateway。', ownerOnly: true, mutating: true, timeoutMs: 10000, parameters: {type: 'object', properties: {}, additionalProperties: false}}, async () => disconnect());
-  api.action('qr-login-start', {description: '仅主人：创建 QQ 官方机器人官方二维码绑定会话。', ownerOnly: true, mutating: true, timeoutMs: 20000, parameters: {type: 'object', properties: {source: {type: 'string', maxLength: 64}}, additionalProperties: false}}, async args => {
-    const result = await qrConnector.start({source: String(args.source || 'dsh-onebot-bridge')});
-    await updateState(() => ({qrLogin: persistedQrStatus(result)}));
-    return {ok: true, ...result};
-  });
-  api.action('qr-login-status', {description: '仅主人：查看 QQ 官方机器人二维码绑定会话状态。', ownerOnly: true, timeoutMs: 5000, parameters: {type: 'object', properties: {}, additionalProperties: false}}, async () => ({ok: true, ...qrPresentation}));
-  api.action('qr-login-cancel', {description: '仅主人：取消 QQ 官方机器人二维码绑定会话。', ownerOnly: true, mutating: true, timeoutMs: 5000, parameters: {type: 'object', properties: {}, additionalProperties: false}}, async () => {
-    const result = qrConnector.cancel();
-    qrPresentation = {...result, qrImage: ''};
-    await updateState(() => ({qrLogin: persistedQrStatus(result)}));
-    return {ok: true, ...result};
-  });
+  const empty = {type: 'object', properties: {}, additionalProperties: false};
+  for (const name of ['set-credentials','qr-login-start','qr-login-status','qr-login-cancel']) {
+    api.action(name, {description: '请在 DSH 主人设置页管理凭据或二维码，不要在聊天中输入密钥。', ownerOnly: true, parameters: empty}, () => api.reject('请使用 DSH 设置 → QQ 框架 → 插件 → QQ 官方机器人'));
+  }
+  api.action('connect', {description: '仅主人：连接 QQ 官方 Gateway。', ownerOnly: true, mutating: true, parameters: empty}, connect);
+  api.action('disconnect', {description: '仅主人：断开 QQ 官方 Gateway。', ownerOnly: true, mutating: true, parameters: empty}, disconnect);
   api.action('status', {description: '仅主人：查看 QQ 官方机器人连接状态，不返回凭据。', ownerOnly: true, timeoutMs: 5000, parameters: {type: 'object', properties: {}, additionalProperties: false}}, async () => {
     const saved = await credentialsForClient();
-    return {ok: true, ...state(), configured: configuredStatus(saved.appId, saved.clientSecret), connected: client.connected, processing};
+    return {ok: true, state: client.status.state, configured: configuredStatus(saved.appId, saved.clientSecret), connected: client.connected, processing};
   });
   api.action('send', {description: '仅主人：向官方机器人指定会话发送文字。官方平台可能限制主动消息；优先在收到消息后使用被动回复。', ownerOnly: true, mutating: true, timeoutMs: 20000, parameters: {type: 'object', properties: {kind: {type: 'string', enum: ['private', 'group', 'channel']}, openid: {type: 'string', maxLength: 200}, groupOpenid: {type: 'string', maxLength: 200}, channelId: {type: 'string', maxLength: 200}, text: {type: 'string', minLength: 1, maxLength: 12000}}, required: ['kind', 'text'], additionalProperties: false}}, async args => {
     if (!client.connected) api.reject('QQ 官方机器人尚未连接');
@@ -223,39 +199,44 @@ export function activateQQOfficial(framework, {credentials, log = () => {}, gene
   });
 
   api.settings(manifest.settings, async () => {
-    const saved = await credentialsForClient();
-    const current = state();
+    let saved, credentialError = '';
+    try { saved = await credentialsForClient(); }
+    catch { credentialError = '凭据不可读，请检查设备密钥或清除后重新绑定'; }
+    const configured = configuredStatus(saved?.appId, saved?.clientSecret);
     const rows = [
-      {key: '凭据', value: configuredStatus(saved.appId, saved.clientSecret) ? '已配置（DSH credentials）' : '未配置'},
-      {key: '连接状态', value: current.lastStatus || '未连接'},
-      {key: 'Bot 名称', value: current.botName || '—'},
-      {key: 'Gateway', value: current.gateway || '—'},
+      {key: '凭据', value: credentialError ? '不可读取' : configured ? '已配置' : '未配置'},
+      {key: '连接状态', value: ({stopped:'未连接',connecting:'连接中',connected:'已连接',disconnected:'已断开'})[client.status.state] || '未连接'},
+      {key: 'Bot 名称', value: client.connected && client.status.botName || '—'},
+      {key: 'Gateway', value: !client.closed && client.status.gateway || '—'},
       {key: '二维码绑定', value: qrConnector.snapshot().state || QR_STATES.IDLE},
       {key: '处理中消息', value: String(processing)}
     ];
-    if (current.lastError) rows.push({key: '最近错误', value: String(current.lastError).slice(0, 240)});
-    return {stats: [{label: '凭据已配置', value: configuredStatus(saved.appId, saved.clientSecret) ? 1 : 0}, {label: '已连接', value: client.connected ? 1 : 0}, {label: '二维码会话', value: qrConnector.running ? 1 : 0}], columns: [{key: 'key', label: '项目'}, {key: 'value', label: '当前值'}], rows, total: rows.length, offset: 0, hasMore: false};
+    const error = credentialError || client.status.lastError || lastReplyError;
+    if (error) rows.push({key: '最近错误', value: error});
+    return {stats: [{label: '凭据已配置', value: configured ? 1 : 0}, {label: '已连接', value: client.connected ? 1 : 0}, {label: '二维码会话', value: qrConnector.running ? 1 : 0}], columns: [{key: 'key', label: '项目'}, {key: 'value', label: '当前值'}], rows, total: rows.length, offset: 0, hasMore: false};
   });
 
-  const syncTimer = setInterval(() => {
-    if (!api.active()) {
-      clearInterval(syncTimer);
-      qrConnector.stop();
-      void client.stop();
-      return;
+  function sync() {
+    if (!active()) {
+      if (previouslyActive) { qrConnector.stop(); stopTransport(); }
+      previouslyActive = false; manualStop = false;
+      return Promise.resolve();
     }
-    const config = api.getConfig();
-    if (config.autoConnect !== true || !configuredStatus(client.appId, client.clientSecret)) {
-      void configureClient().then(saved => {
-        if (!configuredStatus(saved.appId, saved.clientSecret) && client.connected) return client.stop();
-        return undefined;
-      }).catch(error => log('warn', 'QQ 官方机器人配置读取失败：' + String(error?.message || error).slice(0, 160)));
-      return;
-    }
-    if (!client.connected && !client.connecting && !client.ws) void connect().catch(error => log('warn', 'QQ 官方机器人连接失败：' + String(error?.message || error).slice(0, 160)));
-  }, 1500);
+    previouslyActive = true;
+    if (manualStop || !api.getConfig().autoConnect || !client.closed) return Promise.resolve();
+    const signal = lifetime.signal;
+    if (syncJob?.signal === signal) return syncJob.work;
+    const work = configureClient(signal).then(configured => {
+      if (configured && !signal.aborted && active() && !manualStop && api.getConfig().autoConnect) client.start();
+    }).catch(() => { if (!signal.aborted) log('warn','QQ 官方机器人无法读取连接配置'); })
+      .finally(() => { if (syncJob?.signal === signal) syncJob = null; });
+    syncJob = {signal, work}; return work;
+  }
+  const syncTimer = setInterval(sync, 5000); // Also observes SDK quarantine/uninstall while the host is running.
   syncTimer.unref?.();
-  return api;
+  void sync();
+  return {api, ownerControl, sync,
+    reconfigure() { qrConnector.stop(); stopTransport(); manualStop = false; return sync(); },
+    stop() { disposed = true; clearInterval(syncTimer); qrConnector.stop(); stopTransport(); client.removeAllListeners(); }
+  };
 }
-
-export {APP_ID_REF, CLIENT_SECRET_REF};

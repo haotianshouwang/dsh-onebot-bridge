@@ -3,6 +3,7 @@
 import {writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {manifest as qqOfficial} from '../src/builtins/qq-official/index.js';
 import {manifest as sticker} from '../src/builtins/sticker/index.js';
 import {manifest as qzone} from '../src/builtins/qzone/index.js';
 import {manifest as memory} from '../src/builtins/memory/index.js';
@@ -11,7 +12,7 @@ import {manifest as emotion} from '../src/builtins/emotion/index.js';
 import {manifest as mediaAgent} from '../src/builtins/media-agent/index.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-for (const manifest of [sticker, qzone, memory, autonomy, emotion, mediaAgent]) {
+for (const manifest of [sticker, qzone, memory, autonomy, emotion, mediaAgent, qqOfficial]) {
   const file = path.join(root, manifest.entry.replace('src/builtins/', 'src/builtins/').replace('index.js', 'manifest.json'));
   const payload = {
     ...manifest,

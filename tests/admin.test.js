@@ -6,16 +6,17 @@ async function temp(t){const dir=await mkdtemp(path.join(os.tmpdir(),'qq-admin-'
 async function freePort(){return new Promise((resolve,reject)=>{const server=createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});}
 
 test('管理密码策略：长度、重复字符和常见弱密码',()=>{
- assert.equal(validatePassword('short'),'密码至少 10 位');
- assert.equal(validatePassword('aaaaaaaaaaaa'),'密码太简单，请换一个');
- assert.equal(validatePassword('password123'),'密码太常见，请换一个');
+ assert.equal(validatePassword('short'),'密码至少 15 位');
+ assert.equal(validatePassword('aaaaaaaaaaaaaaaa'),'密码太简单，请换一个');
+ assert.equal(validatePassword('password123456789'),'密码太常见，请换一个');
+ for (const common of ['Password123456789!', '1234567890123456', 'password password']) assert.ok(validatePassword(common));
  assert.equal(validatePassword('correct horse battery'),null);
 });
 
 test('scrypt 口令哈希、会话过期与登录限速',async t=>{
  const dir=await temp(t),auth=await new AdminAuth(dir).open();
  assert.equal(auth.configured,false);
- await assert.rejects(auth.setPassword('short'),/至少 10 位/);
+ await assert.rejects(auth.setPassword('short'),/至少 15 位/);
  await auth.setPassword('correct horse battery');
  assert.equal(auth.configured,true);
  assert.equal(await auth.verify('correct horse battery'),true);
@@ -41,14 +42,16 @@ test('scrypt 口令哈希、会话过期与登录限速',async t=>{
 
 test('管理站点：设置密码、登录会话、CSRF、动作白名单与退出',async t=>{
  const dir=await temp(t),port=await freePort(),calls=[];
- const server=await startAdminServer({dir,port,action:async body=>{calls.push(body);return {revision:7,framework:{enabledActions:[]},settings:{},status:{online:true}};},log:()=>{}});
+ const auth=await new AdminAuth(dir).open();
+ const server=await startAdminServer({dir,auth,port,action:async body=>{calls.push(body);return {revision:7,framework:{enabledActions:[]},settings:{},status:{online:true}};},log:()=>{}});
  t.after(()=>server.close());
  const base='http://127.0.0.1:'+port;
  let response=await fetch(base+'/api/session');
  assert.equal((await response.json()).configured,false);
  response=await fetch(base+'/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'short'})});
- assert.equal(response.status,400);
- response=await fetch(base+'/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'correct horse battery'})});
+ assert.equal(response.status,403);
+ await auth.setPassword('correct horse battery');
+ response=await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'correct horse battery'})});
  assert.equal(response.status,200);
  const setup=await response.json();
  const cookie=response.headers.getSetCookie()[0].split(';')[0];
@@ -92,6 +95,7 @@ test('管理站点：Three.js 星图模块由本地静态资源提供',async t=>
 
 test('图片资源按管理会话鉴权，动作携带会话元数据，退出时通知锁定',async t=>{
  const dir=await temp(t),port=await freePort();let seen=null;const ended=[];
+ await (await new AdminAuth(dir).open()).setPassword('correct horse battery');
  const server=await startAdminServer({
   dir,port,
   action:async(body,meta)=>{seen={body,meta};return {revision:1};},
@@ -107,7 +111,7 @@ test('图片资源按管理会话鉴权，动作携带会话元数据，退出�
  });
  t.after(()=>server.close());
  const base='http://127.0.0.1:'+port;
- let response=await fetch(base+'/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'correct horse battery'})});
+ let response=await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'correct horse battery'})});
  const setup=await response.json();const cookie=response.headers.getSetCookie()[0].split(';')[0];
  response=await fetch(base+'/api/sticker-image?id=x',{headers:{cookie}});
  assert.equal(response.status,200);
@@ -130,10 +134,10 @@ test('图片资源按管理会话鉴权，动作携带会话元数据，退出�
 
 test('错误密码触发登录限速，成功后清除',async t=>{
  const dir=await temp(t),port=await freePort();
+ await (await new AdminAuth(dir).open()).setPassword('correct horse battery');
  const server=await startAdminServer({dir,port,action:async()=>({}),log:()=>{}});
  t.after(()=>server.close());
  const base='http://127.0.0.1:'+port;
- await fetch(base+'/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'correct horse battery'})});
  for(let i=0;i<5;i++){
   const response=await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'wrong'+i})});
   assert.equal(response.status,401);

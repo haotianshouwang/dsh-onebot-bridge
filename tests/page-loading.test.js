@@ -8,7 +8,7 @@ function fixture() {
   const loader = source.slice(source.indexOf('async function loadPage('), source.indexOf('async function pageAction('));
   const start = source.indexOf('function qzoneView()');
   const view = source.slice(start, source.indexOf("  const loading = pluginLoading('qzone'", start)) + '}';
-  const box = {Map, Date, state: {view: 'qzone'}, pageCache: new Map(), uiFor: () => ({}), formatError: e => e.message, toast: () => {}, attempts: 0};
+  const box = {Map, Date, sessionEpoch: 0, state: {view: 'qzone'}, pageCache: new Map(), uiFor: () => ({}), formatError: e => e.message, toast: () => {}, attempts: 0};
   vm.createContext(box);
   vm.runInContext(loader + '\n' + view + `
     const pageLoaders = {qzone: async () => {attempts++; throw Error('真实读取失败');}};

@@ -11,7 +11,7 @@
 | GET | `/` | 控制台 HTML |
 | GET | `/assets/app.css`、`/assets/app.js` | 静态资源 |
 | GET | `/api/session` | `{ok, configured, authenticated, csrf}` |
-| POST | `/api/setup` | 首次设置管理密码 |
+| POST | `/api/setup` | 拒绝（403）；首次密码必须由已认证的 DSH 主人在「网页安全」中创建 |
 | POST | `/api/login` | 登录，成功设置 HttpOnly Cookie |
 | POST | `/api/logout` | 退出并锁定该会话的秘密空间 |
 | POST | `/api/password` | 修改管理密码，销毁其他会话 |

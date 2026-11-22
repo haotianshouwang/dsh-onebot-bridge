@@ -14,6 +14,8 @@ import { Actions } from '../core/actions.js';
 import { Builtins } from '../builtins/index.js';
 import {PluginSDK} from '../sdk.js';
 import {packagesFor,FRAMEWORK_VERSION,rememberSettings,migrateConfig,validateConfig as checkConfig} from '../core/package-model.js';
+import {activateQQOfficial} from '../builtins/qq-official/index.js';
+import {officialReply} from '../builtins/qq-official/reply.js';
 import {activateQzone} from '../builtins/qzone/index.js';
 import {createQzoneBackend} from '../builtins/qzone/backend.js';
 import {activateTTS} from '../builtins/tts/index.js';
@@ -31,6 +33,12 @@ import {activateEmotion} from '../builtins/emotion/index.js';
 import {activateMediaAgent} from '../builtins/media-agent/index.js';
 import {MediaBrowserService} from '../builtins/media-agent/browser-service.js';
 import {readPublic} from '../builtins/web/network.js';
+import {moduleHealth} from '../admin/module-health.js';
+import {ownerSecurity} from '../admin/owner-security.js';
+import {ActivityStore} from '../admin/activity-store.js';
+import {createMonitorAdmin} from '../admin/monitor-admin.js';
+import {ResourceMonitor} from './resource-monitor.js';
+import {createRuntimeMonitor} from './runtime-monitor.js';
 import {startAdminServer} from '../web/admin-server.js';
 import {createStickerAdmin} from '../admin/sticker-admin.js';
 import {createQzoneAdmin} from '../admin/qzone-admin.js';
@@ -394,10 +402,39 @@ export async function apply(ctx,config) {
     taskRunnerTimer=setInterval(()=>{void taskRunner.tick().catch(error=>log('warn','任务执行失败：'+String(error?.message||error).slice(0,160)));},60000);
     taskRunnerTimer.unref?.();
   }catch(error){log('error','任务执行器不可用：'+error.message);taskRunner=null;}
+  const activity = await new ActivityStore(path.join(store.dir, 'activity')).open();
+  const runtimeMonitor = createRuntimeMonitor({ctx, activity, log, resolveSession: sessionId => {
+    if (!sessionId || !native.managed.has(sessionId)) return null;
+    const active = native.active.get(sessionId);
+    return {purpose: active?.purpose || active?.context?.mode || 'session-auxiliary', platform: active?.platform || 'qq', chatKey: active?.context?.key || '', requestId: active?.requestId || ''};
+  }});
+  const replyToOfficial = officialReply({llm: ctx.llm, modelInfo: () => incoming.modelInfo(ctx)});
+  const qqOfficial = activateQQOfficial(sdk.facade(), {
+    credentials: ctx.credentials, log,
+    repliesAllowed: () => !closed && !store.data.framework.paused && builtins.enabled('ai-chat'),
+    generation: () => store.data.framework.generation,
+    generateReply: ({text, signal}) => runtimeMonitor.scope({purpose: 'official-reply', platform: 'qq-official'}, () => replyToOfficial({text, signal})),
+    onReplySent: () => runtimeMonitor.record({kind: 'message', purpose: 'message-send', platform: 'qq-official', status: 'submitted', source: 'official-api'})
+  });
+  const resources = new ResourceMonitor().start();
+  // Only use recorded outbound tool outcomes; submitted or accepted is not confirmed delivery.
+  const deliveryRecords = () => (store.data.framework.audit || []).filter(row =>
+    row.capability === 'qq.message.send' && ['confirmed','submitted','accepted','unknown','failed','cancelled'].includes(row.state || row.outcome)
+  ).map(row => ({finalState:row.state || row.outcome}));
+  const monitorAdmin = createMonitorAdmin({activity, runtimeMonitor, resources,
+    getStatus: () => ({...bot?.status, paused: store.data.framework.paused}),
+    getLife: () => lifeState?.snapshot?.(),
+    getEmotion: () => ({enabled: sdk.active('qq-emotion'), observed: Boolean(emotion?.service?.current?.().global), state: emotion?.service?.publicState(proactiveKey())}),
+    getJobs: () => store.data.inbox || [], getDelivery: () => deliveryRecords(),
+    getWatchJobs: () => sdk.active('qq-media-agent') ? (store.data.framework.pluginData['qq-media-agent']?.watchJobs || []) : [],
+    getActivities: () => autonomy?.store?.state?.log || [],
+    getPackages: () => [...Object.values(store.data.framework.nativePackages), ...Object.values(store.data.extensions)].map(item => ({id: item.manifest?.id || item.id, name: item.manifest?.name || item.id, enabled: item.enabled === true, registered: sdk.live.has(item.manifest?.id || item.id) || extensions.live.has(item.manifest?.id || item.id), quarantined: item.health?.quarantined === true, error: Boolean(item.error || item.migrationError)}))
+  });
   // 独立管理站点：只监听本机，自带密码登录；启动失败只记日志，不影响 QQ 桥接。
   let admin=null;
-  try{admin=await startAdminServer({
-    dir:path.join(store.dir,'admin'),action,
+  const security=await ownerSecurity(path.join(store.dir,'admin'),ctx.credentials,session=>autonomyAdmin?.lockSession(session));
+  const adminOptions={auth:security.auth,
+    dir:path.join(store.dir,'admin'),action:dispatch,
     asset:async({kind,id,url},meta)=>{
       if(!meta?.session)throw Object.assign(new Error('请先登录'),{status:401});
       if(kind==='sticker'){
@@ -406,12 +443,25 @@ export async function apply(ctx,config) {
       }
       if(kind==='qzone-image')return qzoneAdmin.image(url);
       if(kind==='qzone-avatar')return qzoneAdmin.avatar(id);
+      if(kind==='bot-avatar'){
+        if(String(id)!==String(bot?.status?.bot||''))throw Object.assign(new Error('当前账号头像不可用'),{status:404});
+        return qzoneAdmin.avatar(id);
+      }
       throw Object.assign(new Error('不支持的资源'),{status:404});
     },
-    onSessionEnd:session=>autonomyAdmin?.lockSession(session),
     log
-  });}
-  catch(error){log('warn','独立管理站点启动失败：'+error.message);admin=null;}
+  };
+  const stopAdmin=async()=>{
+    const current=admin;
+    admin=null;
+    await current?.close();
+  };
+  const startAdmin=async()=>{
+    if(admin||store.data.settings.adminConsoleEnabled===false)return;
+    try{admin=await startAdminServer(adminOptions);}
+    catch(error){log('warn','独立管理站点启动失败：'+error.message);admin=null;}
+  };
+  await startAdmin();
   // 角色自主决定是否创建秘密空间：只在她启用且 QQ 在线时尝试一次；决策结果持久化，不重复覆盖。
   if(autonomyAdmin&&store.data.framework.nativePackages['qq-autonomy']?.config?.secretAutoDecide!==false){
     secretDecisionTimer=setTimeout(()=>{
@@ -422,7 +472,7 @@ export async function apply(ctx,config) {
     secretDecisionTimer.unref?.();
   }
   const uninstaller=new Uninstaller(store,{builtins,extensions,beforeChange:async()=>{invalidate(store);await native.revoke();}});
-  const maintenance=setInterval(()=>sdk.pruneStorage().catch(e=>log('warn',e.message)),60000);maintenance.unref?.();
+  const maintenance=setInterval(()=>{if(!closed){try{activity.prune();}catch{log('warn','监控账本清理失败');}void sdk.pruneStorage().catch(e=>log('warn',e.message));}},60000);maintenance.unref?.();
   events.subscribe('core-router',['message'],msg=>{
    router.receive(msg);
    // 自动收藏是旁路：失败只记日志，不影响消息处理。
@@ -436,7 +486,9 @@ export async function apply(ctx,config) {
     if(store.data.settings.enabled)try{await bot.start();}catch(e){log('error','OneBot 启动失败：'+e.message);}
   }
   function snapshot(){
-    return {participation:router.participation.snapshot(),chatProfiles:store.data.chatProfiles,promptStatus:native.lastPromptCheck,presetStatus:native.presetStatus,mediaStatus:incoming.status,proactive:proactive?.status?.()||null,tasks:taskStore.status(),taskDetails:taskStore.list({limit:10}).map(taskDetail),pluginPages:[...sdk.pageList(),...Object.entries(store.data.extensions).filter(([,p])=>p.manifest.hostApiVersion===2).map(([id,p])=>({id,native:false,title:p.manifest.settings?.title||p.manifest.name,description:p.manifest.settings?.description||p.manifest.description,sections:p.manifest.settings?.sections||[],...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})}))],framework:{...store.data.framework,pluginData:undefined,retiredSessions:store.data.framework.retiredSessions.map(({sessionId,archived,error})=>({sessionId,archived,error}))},builtins:builtins.list(),capabilities:actions.catalog(),systemDenied:SYSTEM_DENIED,eventState:events.snapshot(),revision:store.data.revision,diagnostics:router.diagnostics,settings:store.data.settings,tokenConfigured:Boolean(token),status:bot?.status,
+    const auth = security.auth.status(), secure = Boolean(process.env.QQBOT_ADMIN_ORIGIN);
+    const health = moduleHealth({data:store.data,nativeLive:sdk.live,extensionLive:extensions.live,problems:(...args)=>packages.problems(...args),online:bot?.status?.online===true,consoleRunning:Boolean(admin),auth,secure,monitor:{delivery:deliveryRecords().at(-1)}});
+    return {moduleHealth:health,adminConsole:{enabled:store.data.settings.adminConsoleEnabled!==false,running:Boolean(admin),url:admin?.url||'',secure,auth},participation:router.participation.snapshot(),chatProfiles:store.data.chatProfiles,promptStatus:native.lastPromptCheck,presetStatus:native.presetStatus,mediaStatus:incoming.status,proactive:proactive?.status?.()||null,tasks:taskStore.status(),taskDetails:taskStore.list({limit:10}).map(taskDetail),pluginPages:[...sdk.pageList(),...Object.entries(store.data.extensions).filter(([,p])=>p.manifest.hostApiVersion===2).map(([id,p])=>({id,native:false,title:p.manifest.settings?.title||p.manifest.name,description:p.manifest.settings?.description||p.manifest.description,sections:p.manifest.settings?.sections||[],...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})}))],framework:{...store.data.framework,pluginData:undefined,retiredSessions:store.data.framework.retiredSessions.map(({sessionId,archived,error})=>({sessionId,archived,error}))},builtins:builtins.list(),capabilities:actions.catalog(),systemDenied:SYSTEM_DENIED,eventState:events.snapshot(),revision:store.data.revision,diagnostics:router.diagnostics,settings:store.data.settings,tokenConfigured:Boolean(token),status:bot?.status,
       personas:store.data.personas,personaDefaults:store.data.personaDefaults,bindings:store.data.bindings,
       sessions:store.data.sessions,nativePackages:Object.values(store.data.framework.nativePackages).map(p=>({...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})})),extensions:Object.values(store.data.extensions).map(p=>({...p,dependencyProblems:packages.problems(p.manifest,{enabled:true})})),sources:store.data.sources,
       logs:store.data.logs.slice(-100),jobs:store.data.inbox.slice(-30).map(({persona,reply,flow,...j})=>({...j,batchCount:flow?.parts.length||1,message:{key:j.message.key,text:j.message.text.slice(0,120)}})),
@@ -449,6 +501,7 @@ export async function apply(ctx,config) {
   async function action(body,meta={}){
     if(closed)throw new Error('插件已停止');const {action,revision}=body;
     if(action==='snapshot')return snapshot();
+    if(action==='monitorAdmin')return monitorAdmin.invoke(body.op,body.query||{});
     if(action==='stickerAdmin'){
       const op=String(body.op||'overview');
       if(op==='overview')return stickerAdmin.overview();
@@ -507,7 +560,7 @@ export async function apply(ctx,config) {
     }
     if(action==='prepareUninstall')return uninstaller.prepare(body);
     if(action==='cancelUninstall')return uninstaller.cancel(body.ticket);
-    if(action==='confirmUninstall'){await uninstaller.confirm(body);await sdk.pruneStorage();return snapshot();}
+    if(action==='confirmUninstall'){await uninstaller.confirm(body);await qqOfficial.sync();await sdk.pruneStorage();return snapshot();}
     if(['removeBuiltin','removeNativePackage','removeExtension'].includes(action))throw Error('请使用统一卸载流程，选择配置处理方式后再次确认');
     if(action==='chatDetails'){
       const m=chatIdentity(body.key),profile=store.data.chatProfiles?.[m.key]||{},f=store.data.framework,execution=permissions.issue({...m,id:'local-preview'},'agent');
@@ -597,7 +650,9 @@ export async function apply(ctx,config) {
       const next=checkConfig(p.manifest,configInput),automationGrants=body.automationGrants??p.automationGrants??[];
       if(!Array.isArray(automationGrants)||automationGrants.some(id=>!(p.manifest.automations||[]).some(a=>a.id===id)))throw new Error('自动回复授权无效');
       p.settingsHistory=rememberSettings(p);p.configDeleted=false;p.config=next;p.configVersion=p.manifest.configVersion??1;p.scope={private:!!scope.private,allUsers:scope.allUsers===true,users,groups};p.automationGrants=[...new Set(automationGrants)];p.enabled=body.enabled===true;p.uninstalled=false;p.migrationError=null;p.error=null;p.health={...p.health,quarantined:false,consecutive:0};
+      if(body.id==='qq-official-bot'&&!p.enabled)await qqOfficial.sync();
       invalidate(store);await native.revoke();await sdk.pruneStorage();await store.persist();
+      if(body.id==='qq-official-bot'&&p.enabled)await qqOfficial.reconfigure();
       if(body.id==='qq-autonomy')await autonomyAdmin?.applyRetention();
       return snapshot();
     }
@@ -688,6 +743,7 @@ export async function apply(ctx,config) {
       const groups=ids(scope?.groups),users=ids(scope?.users);if(groups.some(g=>!store.data.framework.listenGroups.includes(g)))throw new Error('历史设置中的群已不在监听范围，请先调整监听');
       packages.protect(body.id);const history=rememberSettings(p);p.config=config;p.configVersion=p.manifest.configVersion??1;p.scope={private:!!scope.private,allUsers:scope.allUsers===true,users,groups};p.enabled=false;
       p.automationGrants=(old.automationGrants||[]).filter(id=>(p.manifest.automations||[]).some(a=>a.id===id));p.settingsHistory=history;p.error=null;p.migrationError=null;
+      if(body.native && body.id==='qq-official-bot')await qqOfficial.reconfigure();
       invalidate(store);await native.revoke();await sdk.pruneStorage();await store.persist();return snapshot();
     }
     if(action==='installExtension'){if(!builtins.enabled('market'))throw new Error('插件市场包已停用');await market.install(body.source,body.id,body.version);invalidate(store);await native.revoke();await sdk.pruneStorage();await store.persist();return snapshot();}
@@ -706,6 +762,10 @@ export async function apply(ctx,config) {
     }
     throw new Error('不支持的操作');
   }
+  function dispatch(body,meta) {
+    if (['snapshot','monitorAdmin','catalog','preview','groups','friends'].includes(body.action)) return action(body,meta);
+    const task=adminTail.then(()=>action(body,meta));adminTail=task.catch(()=>{});return task;
+  }
   const disposeFetch=ctx.connection.fetch.register({path:'/api/qq-bridge',methods:['POST'],requestBody:'buffered',fetch:async request=>{
     try{
       // Mutating operations remain under DSH's owner authentication and same-origin checks.
@@ -714,11 +774,18 @@ export async function apply(ctx,config) {
       if(!request.headers.get('content-type')?.includes('application/json'))return Response.json({ok:false,error:'仅接受 JSON'},{status:415});
       const raw=await request.text();if(raw.length>12*1024*1024)return Response.json({ok:false,error:'请求过大'},{status:413});
       const body=JSON.parse(raw);if(body.action!=='uploadMedia'&&raw.length>160000)throw new Error('请求过大');
-      const readOnly=['snapshot','preview','catalog','groups','friends','pluginPageData','mediaInfo'].includes(body.action);
-      const task=readOnly?action(body):adminTail.then(()=>action(body));if(!readOnly)adminTail=task.catch(()=>{});
-      return Response.json({ok:true,value:await task});
-    }catch(error){await store.persist().catch(()=>{});return Response.json({ok:false,error:String(error.message||error).replaceAll(token||'\0','[已隐藏]')},{status:400});}
+      // Only the authenticated DSH owner route may handle secret entry and QR presentation.
+      // Never register either action on the independent web server or expose them to model tools.
+      if(body.action==='officialConnection'){
+        const job=adminTail.then(()=>qqOfficial.ownerControl(body));adminTail=job.catch(()=>{});
+        try{return Response.json({ok:true,value:await job},{headers:{'cache-control':'no-store'}});}
+        catch(error){const message=error?.code==='PLUGIN_INPUT'?error.message:'操作失败，请检查模块是否已启用、SDK 是否已安装及凭据存储是否可用。';
+          return Response.json({ok:false,error:message},{status:400,headers:{'cache-control':'no-store'}});}
+      }
+      if(body.action==='webSecurity')return Response.json({ok:true,value:await security.invoke(body)},{headers:{'cache-control':'no-store'}});
+      return Response.json({ok:true,value:await dispatch(body)});
+    }catch(error){await store.persist().catch(()=>{});return Response.json({ok:false,error:String(error.message||error).replaceAll(token||'\0','[已隐藏]')},{status:400,headers:{'cache-control':'no-store'}});}
   }});
-  ctx.effect(()=>()=>{closed=true;clearInterval(emotionTimer);clearInterval(reminderTimer);clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearInterval(taskRunnerTimer);clearInterval(memoryReviewTimer);clearInterval(lifeTimer);clearInterval(socialEnergyTimer);clearInterval(profileTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await lifeState?.persist();await socialEnergy?.persist();await profileStore?.persist();await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();await mediaBrowser.close();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
+  ctx.effect(()=>()=>{closed=true;qqOfficial.stop();security.auth.clearPending();security.auth.revokeAll();resources.stop();runtimeMonitor.stop();activity.close();clearInterval(emotionTimer);clearInterval(reminderTimer);clearInterval(maintenance);clearInterval(autonomyTimer);clearInterval(proactiveTimer);clearInterval(taskRunnerTimer);clearInterval(memoryReviewTimer);clearInterval(lifeTimer);clearInterval(socialEnergyTimer);clearInterval(profileTimer);clearTimeout(secretDecisionTimer);qzoneAdmin.stopScheduler();disposeFetch();autonomyAdmin?.vault?.lockAll();void(async()=>{await lifeState?.persist();await socialEnergy?.persist();await profileStore?.persist();await router.stop();await bot?.stop();await extensions.stop();await sdk.stop();await mediaBrowser.close();memory?.close();await admin?.close();await media.stop();await store.persist();})().catch(e=>ctx.logger.warn('QQ bridge cleanup: '+e.message));},'qq-bridge cleanup');
   await sdk.pruneStorage();await market.start();await media.start();await extensions.start();await native.start();await connect();qzoneAdmin.startScheduler();log('info','QQ 桥接插件已就绪，数据目录：'+store.dir);
 }

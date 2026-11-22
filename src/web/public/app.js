@@ -1,8 +1,13 @@
 /* QQ 框架独立管理控制台：原生 ES 模块；Three.js 通过本地静态模块提供星图渲染。 */
 import {createStarMap} from './star-map.js';
 
+import {createMonitorDashboard, COMPONENT_NAMES} from './monitor-dashboard.js';
+
+const DEFAULT_VIEW = 'overview';
+let monitorTimer, sessionEpoch = 0, logoutPending = false, logoutInFlight = false;
+const logoutMarker = 'night-watch:logout-pending';
 const state = {
-  csrf: null, data: null, view: 'overview', busy: false, ui: {}, starMap: null,
+  csrf: null, data: null, view: DEFAULT_VIEW, busy: false, ui: {}, starMap: null,
   // 页面级随机标识：刷新即换新值，秘密空间因此必须重新输入密码。
   vaultSession: globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + Math.random().toString(36).slice(2))
 };
@@ -10,7 +15,9 @@ const root = document.getElementById('root');
 const toastEl = document.getElementById('toast');
 
 const VIEWS = [
-  ['overview', '总览', '运行状态、最近活动与快捷操作'],
+  ['overview', '运行监控', '系统采样、调用与运行状态'],
+  ['health', '模块巡检', '按运行状态检查已注册的模块'],
+  ['summary', '框架总览', '最近活动与快捷操作'],
   ['connection', '连接', 'OneBot 地址、Token 与模型'],
   ['chat', '聊天', '范围、参与方式与分条'],
   ['listen', '监听', '接收哪些私聊、群和通知'],
@@ -336,7 +343,7 @@ function formatError(error) {
 }
 
 async function fetchJson(url, body) {
-  const response = await fetch(url, body === undefined ? {} : {
+  const response = await fetch(url, body === undefined ? {signal:AbortSignal.timeout(15000)} : {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
@@ -352,9 +359,11 @@ async function fetchJson(url, body) {
 }
 
 async function secureApi(action, payload = {}) {
+  const epoch = sessionEpoch;
+  if (logoutPending) throw new Error('页面已锁定');
   const body = {action, revision: state.data?.revision, ...payload};
   if (action === 'secretAdmin') body.vaultSession = state.vaultSession;
-  const read = action === 'qzoneAdmin' && ['overview', 'friends', 'feed'].includes(payload.op);
+  const read = action === 'monitorAdmin' || action === 'qzoneAdmin' && ['overview', 'friends', 'feed'].includes(payload.op);
   const signal = AbortSignal.timeout(read ? 20000 : 180000);
   let response;
   try { response = await fetch('/api/action', {
@@ -364,7 +373,8 @@ async function secureApi(action, payload = {}) {
   }); } catch (error) { throw new Error(signal.aborted ? '请求超时，请稍后重试' : '无法连接本机服务，请确认服务正在运行'); }
   let json;
   try { json = await response.json(); } catch { json = { ok: false, error: signal.aborted ? '请求超时，请稍后重试' : '服务返回了无法解析的内容' }; }
-  if (response.status === 401) { state.data = null; state.csrf = null; state.ui = {}; pageCache.clear(); closeModal(); state.starMap?.destroy(); state.starMap = null; renderAuth('login', '会话已过期，请重新登录'); throw new Error('请重新登录'); }
+  if (epoch !== sessionEpoch) throw new Error('请重新登录');
+  if (response.status === 401) { lockPage(); renderAuth('login', '会话已过期，请重新登录'); throw new Error('请重新登录'); }
   if (!response.ok || json.ok === false) throw new Error(json.error || ('HTTP ' + response.status));
   return json.value;
 }
@@ -396,14 +406,16 @@ async function loadPage(key, work, {force = false} = {}) {
   const current = pageCache.get(key);
   if (current?.loading) return;
   if (!force && current?.data && !current.error) return;
-  const pending = {...(current || {}), loading: true, error: null};
+  const pending = {...(current || {}), loading: true, error: null, epoch: sessionEpoch};
   pageCache.set(key, pending);
   if (state.view === key) render();
   try {
     const data = await work();
+    if (pending.epoch !== sessionEpoch) return;
     if (pageCache.get(key) !== pending) return;
     pageCache.set(key, {data, loading: false, error: null, at: Date.now()});
   } catch (error) {
+    if (pending.epoch !== sessionEpoch) return;
     if (pageCache.get(key) !== pending) return;
     if (error.message === '请重新登录') return;
     pageCache.set(key, {...(current || {}), loading: false, error: formatError(error), data: current?.data || null, at: Date.now()});
@@ -440,65 +452,40 @@ function pageStatus(key) {
 const pageLoaders = {};
 
 function renderAuth(mode, error = '') {
+  stopMonitorRefresh();
   stopClock();
   clear(root);
-  const setup = mode === 'setup';
-  let password = '', confirm = '';
-  const errorBox = el('div', { class: 'auth-error', role: 'alert' }, error);
-  errorBox.hidden = !error;
-  const form = el('form', { class: 'auth-form' },
-    field('管理密码', textInput('', value => { password = value; }, { type: 'password', autocomplete: setup ? 'new-password' : 'current-password', placeholder: setup ? '至少 10 位' : '输入管理密码' })),
-    setup ? field('确认密码', textInput('', value => { confirm = value; }, { type: 'password', autocomplete: 'new-password', placeholder: '再输入一次' })) : null,
-    button(setup ? '设置密码并进入' : '登录', null, { primary: true, type: 'submit' }),
-    errorBox
-  );
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (setup && password !== confirm) { errorBox.textContent = '两次输入的密码不一致'; errorBox.hidden = false; return; }
-    try {
-      const path = setup ? '/api/setup' : '/api/login';
-      const json = await fetchJson(path, { password });
-      state.csrf = json.csrf;
-      await load();
-    } catch (failure) {
-      errorBox.textContent = failure.message;
-      errorBox.hidden = false;
-    }
+  const access = state.access || {}, setup = mode === 'setup' || access.awaitingEnrollment || access.locked;
+  const subtitle = access.locked ? '认证记录不可用，请在宿主恢复备份。' : setup ? '由已登录的 DSH 主人在「设置 → QQ 框架 → 网页安全」完成设置，再回到这里。' : '使用独立的管理密码登录。30 分钟无操作后，会话将自动锁定。';
+  const errorBox = el('div',{class:'auth-error',role:'alert'},error); errorBox.hidden = !error;
+  const password = textInput('',()=>{},{type:'password',autocomplete:'current-password'});
+  const factor = textInput('',()=>{},{autocomplete:'one-time-code',placeholder:'6 位验证码或单次恢复码'});
+  const submit = button('登录控制台',null,{primary:true,type:'submit'});
+  const form = el('form',{class:'auth-form'},field('管理密码',password),access.factorRequired && field('二次验证',factor),submit,errorBox);
+  form.addEventListener('submit',async event => {
+    event.preventDefault(); if (submit.disabled) return; submit.disabled=true;
+    try { const json=await fetchJson('/api/login',{password:password.value,factor:factor.value}); password.value=''; factor.value=''; state.csrf=json.csrf; await load(); }
+    catch (failure) { errorBox.textContent=failure.message;errorBox.hidden=false; }
+    finally { submit.disabled=false; }
   });
-  const stage = el('aside', { class: 'auth-stage' },
-    el('div', { class: 'auth-brand' },
-      el('span', { class: 'mark' }, 'Q'),
-      el('div', {}, el('strong', {}, 'QQ 框架'), el('small', {}, 'Night Watch Console'))),
-    el('div', { class: 'auth-copy' },
-      el('p', { class: 'eyebrow' }, setup ? 'FIRST RUN' : 'ADMIN ACCESS'),
-      el('h1', {}, setup ? '给控制台' : '守夜人的', el('br'), setup ? '一把钥匙。' : '控制台。'),
-      el('p', { class: 'auth-quote' }, '“Always on, quietly.”'),
-      el('p', { class: 'auth-lede' }, setup
-        ? '第一次打开需要设置管理密码。它只保存在本机，使用 scrypt 哈希，不会写进日志或插件状态。'
-        : 'OneBot 11 桥接、受限 Agent 与功能包。管理站点只在本机开放，不经过外网。'),
-      el('div', { class: 'auth-facts' },
-        el('span', {}, '只监听 127.0.0.1'),
-        el('span', {}, 'scrypt 哈希'),
-        el('span', {}, '会话 12 小时'))),
-    el('div', { class: 'auth-meta' }, el('span', {}, 'QQ 框架 · Night Watch'), el('span', {}, '127.0.0.1:3097')));
-  const panel = el('main', { class: 'auth-panel' },
-    el('div', { class: 'auth-card' },
-      el('p', { class: 'eyebrow' }, setup ? 'SET PASSWORD' : 'SIGN IN'),
-      el('h2', {}, setup ? '初始化管理密码' : '登录管理控制台'),
-      el('p', { class: 'auth-sub' }, setup
-        ? '密码至少 10 位，不能是常见弱密码。设置后即可进入控制台。'
-        : 'QQ 框架独立管理站点。默认只允许本机访问，30 分钟无操作自动登出。'),
-      form,
-      el('p', { class: 'auth-hint' }, 'http://127.0.0.1:3097 · 仅本机')));
-  root.append(el('div', { class: 'auth' }, stage, panel));
+  const stage=el('aside',{class:'auth-stage'},el('div',{class:'auth-brand'},el('span',{class:'mark'},'Q'),el('div',{},el('strong',{},'QQ 框架'),el('small',{},'Night Watch Console'))),
+    el('div',{class:'auth-copy'},el('p',{class:'eyebrow'},'NIGHT WATCH'),el('h1',{},'夜航',el('br'),'控制台'),el('p',{class:'auth-lede'},'检查模块、调整回复范围，查看每一次投递的结果。')),
+    el('div',{class:'auth-meta'},'QQ 框架 · 管理员入口'));
+  root.append(el('div',{class:'auth'},stage,el('main',{class:'auth-panel'},el('div',{class:'auth-card'},el('p',{class:'eyebrow'},setup?'OWNER SETUP':'SIGN IN'),
+    el('h2',{},access.locked?'登录已锁定':setup?'等待主人配置':'登录管理控制台'),el('p',{class:'auth-sub'},subtitle),setup?button('重新检查',boot):form,
+    el('p',{class:'auth-hint'},location.host)))));
+
 }
 
 async function load() {
   try {
+    const initial = !state.data;
     state.data = await secureApi('snapshot');
+    // 原生插件的书签要等首份快照提供页面清单后才能识别。
+    if (initial) state.view = viewFromHash();
     render();
   } catch (error) {
-    if (error.message !== '请重新登录') renderAuth('login', error.message);
+    if (!logoutPending && error.message !== '请重新登录') renderAuth('login', error.message);
   }
 }
 
@@ -551,34 +538,78 @@ function shellPage() {
       iconButton('refresh', '刷新状态', () => load()),
       iconButton('logout', '退出登录', logout)));
   const content = el('div', { class: 'content' }, ...[].concat(viewContent()));
-  return el('div', { class: 'shell' }, sidebar,
+  return el('div', { class: 'shell', dataset:{view:state.view} }, sidebar,
     el('main', {}, topbar, content,
       el('footer', { class: 'foot' },
         el('span', {}, `QQ 框架 ${data.compatibility?.framework || '—'} · DSH ${data.compatibility?.dsh || '—'}`),
-        el('span', {}, '127.0.0.1:3097 · 数据仅存本机'))));
+        el('span', {}, '' + location.host + ' · 管理控制台'))));
 }
 
+let rendering = false;
 function render() {
-  if (!state.data) return;
-  stopClock();
-  state.starMap?.destroy();
-  state.starMap = null;
-  clear(root).append(shellPage());
-  startClock();
-  root.querySelectorAll('[data-count]').forEach(node => { node.textContent = node.dataset.count; });
+  // A plugin can start its initial load while shellPage is building its loading state.
+  if (rendering || !state.data || logoutPending) return;
+  rendering = true;
+  try {
+    stopClock();
+    state.starMap?.destroy();
+    state.starMap = null;
+    root.replaceChildren(shellPage());
+    startClock(); scheduleMonitorRefresh();
+    root.querySelectorAll('[data-count]').forEach(node => { node.textContent = node.dataset.count; });
+  } finally {
+    rendering = false;
+  }
+}
+
+function lockPage(revokeVault = false) {
+  closeModal();
+  sessionEpoch++;
+  stopMonitorRefresh(); stopClock();
+  state.starMap?.destroy(); state.starMap = null;
+  state.data = null; state.csrf = null; state.ui = {}; pageCache.clear();
+  clearTimeout(toast._timer); toastEl.hidden = true; toastEl.textContent = '';
+  clear(root);
+}
+
+function logoutScreen(retry) {
+  root.replaceChildren(el('main',{class:'auth-panel'},el('div',{class:'auth-card',role:'status'},
+    el('h2',{},'页面已锁定'),el('p',{class:'auth-sub'},retry
+      ? '服务端尚未确认退出。请恢复连接后重试，或由 DSH 主人撤销全部网页会话。' : '正在向服务端确认退出…'),
+    retry && button('重试退出',logout,{primary:true}))));
 }
 
 async function logout() {
+  if (logoutInFlight) return;
+  let csrf = state.csrf;
+  if (!logoutPending) lockPage(true);
+  logoutPending = logoutInFlight = true;
+  // Store only the intent, never a token. Reload must not reopen a failed logout.
+  try { sessionStorage.setItem(logoutMarker,'1'); } catch { /* storage may be disabled */ }
+  logoutScreen(false);
   try {
-    await fetch('/api/logout', { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': state.csrf || '' }, body: '{}' });
-  } catch { /* 忽略 */ }
-  state.data = null; state.csrf = null; state.ui = {}; pageCache.clear(); closeModal();
-  renderAuth('login');
+    if (!csrf) {
+      const session = await fetchJson('/api/session');
+      state.access = session;
+      if (session.authenticated) {
+        if (!session.csrf) throw new Error('会话状态不可用');
+        csrf = session.csrf;
+      } else if (session.authenticated !== false) throw new Error('会话状态不可用');
+    }
+    if (csrf) {
+      const res = await fetch('/api/logout', {method:'POST',headers:{'content-type':'application/json','x-csrf-token':csrf},body:'{}',signal:AbortSignal.timeout(15000)});
+      if (res.status !== 401 && (!res.ok || (await res.json()).ok !== true)) throw new Error('未确认退出');
+    }
+    try { sessionStorage.removeItem(logoutMarker); } catch { /* storage may be disabled */ }
+    logoutPending = false;
+    renderAuth('login');
+  } catch { logoutScreen(true); }
+  finally { logoutInFlight = false; }
 }
 
 function viewFromHash() {
   const [id, tab] = location.hash.replace(/^#\/?/, '').split('/');
-  if (!VIEWS.some(view => view[0] === id)) return 'overview';
+  if (!VIEWS.some(view => view[0] === id)) return DEFAULT_VIEW;
   if (tab && PLUGIN_VIEWS.has(id)) {
     state.ui ||= {};
     state.ui[id] ||= {};
@@ -596,8 +627,112 @@ function go(id) {
   render();
 }
 
+function monitorHelpers() {
+  return {el, button, card, field, select, pill, stat, grid, pageHeader, stateBox, pager, dateText, bytesText};
+}
+
+function stopMonitorRefresh() {
+  clearTimeout(monitorTimer);
+  monitorTimer = null;
+}
+
+function monitorQuery(ui) {
+  return {range: ui.range || 'today', kind: ui.kind || '', component: ui.component || '', status: ui.status || '', model: ui.model || '', platform: ui.platform || '', offset: ui.offset || 0, limit: 25};
+}
+
+async function refreshDashboard({recordsOnly = false} = {}) {
+  if (!state.data || state.view !== 'overview' || document.hidden) return;
+  const ui = uiFor('monitor');
+  if (ui.loading) return;
+  ui.loading = true;
+  const request = ui.request = (ui.request || 0) + 1;
+  const auth = state.csrf;
+  const query = monitorQuery(ui);
+  const calls = recordsOnly ? [secureApi('monitorAdmin', {op: 'records', query})] : [
+    secureApi('monitorAdmin', {op: 'overview', query: {range: query.range}}),
+    secureApi('monitorAdmin', {op: 'records', query})
+  ];
+  const values = await Promise.allSettled(calls);
+  if (!state.data || state.csrf !== auth || state.ui.monitor !== ui || ui.request !== request) return;
+  ui.loading = false;
+  const overview = recordsOnly ? null : values[0];
+  const records = values.at(-1);
+  if (overview?.status === 'fulfilled') { ui.data = overview.value; ui.error = ''; }
+  else if (overview) ui.error = formatError(overview.reason);
+  if (records.status === 'fulfilled') { ui.records = records.value; ui.recordsError = ''; }
+  else ui.recordsError = formatError(records.reason);
+  if (state.view === 'overview') render();
+}
+
+function scheduleMonitorRefresh() {
+  stopMonitorRefresh();
+  if (!state.data || state.view !== 'overview' || document.hidden) return;
+  monitorTimer = setTimeout(() => {
+    monitorTimer = null;
+    if (document.activeElement?.matches('input, select, textarea') || document.querySelector('.modal-backdrop')) scheduleMonitorRefresh();
+    else void refreshDashboard();
+  }, 10000);
+}
+
+function dashboardView() {
+  const ui = uiFor('monitor');
+  if (!ui.initialized) {
+    ui.initialized = true;
+    queueMicrotask(() => { void refreshDashboard(); });
+  }
+  if (!ui.data) return stateBox(ui.error ? '监控数据读取失败' : '正在读取监控台', ui.error || '连接状态、系统采样与调用账本', ui.error ? button('重试', () => refreshDashboard(), {ghost: true}) : null);
+  const change = (key, value) => {
+    ui[key] = value;
+    ui.offset = 0;
+    ui.request = (ui.request || 0) + 1;
+    ui.loading = false;
+    void refreshDashboard({recordsOnly: key !== 'range'});
+  };
+  return createMonitorDashboard(ui.data, ui.records, {
+    range: ui.range || 'today', kind: ui.kind, component: ui.component, status: ui.status, model: ui.model, platform: ui.platform,
+    models: [...new Set(ui.data.usage.breakdown.map(row => row.model).filter(Boolean))],
+    platforms: [...new Set(ui.data.usage.breakdown.map(row => row.platform).filter(Boolean))],
+    components: [...new Set([...Object.keys(COMPONENT_NAMES), ...ui.data.usage.breakdown.map(row => row.component)])],
+    refreshing: ui.loading, error: ui.error, recordsError: ui.recordsError,
+    onRange: value => change('range', value), onKind: value => change('kind', value), onComponent: value => change('component', value), onStatus: value => change('status', value), onModel: value => change('model', value), onPlatform: value => change('platform', value),
+    onRefresh: () => refreshDashboard(), onRecordsRefresh: () => refreshDashboard({recordsOnly: true}),
+    onPage: value => { ui.offset = value; void refreshDashboard({recordsOnly: true}); }
+  }, monitorHelpers());
+}
+
+function healthView() {
+  const report = state.data.moduleHealth, ui = uiFor('health');
+  if (!report) return stateBox('无法读取巡检清单', '请检查宿主版本，再刷新状态。', button('刷新状态', load));
+  const names = {fault:'需处理', pending:'待验证', ready:'已就绪', off:'已停用'};
+  const filter = ui.filter || 'all';
+  const goTo = r => {
+    const view = VIEWS.some(v => v[0] === r.web) ? r.web : 'plugins';
+    go(view);
+    if (view === 'plugins') {
+      const kind = {'内置模块':'builtin','原生模块':'native','声明式扩展':'extension'}[r.group];
+      root.querySelector(`[data-package-kind="${kind}"][data-package-id="${CSS.escape(r.id)}"]`)?.focus();
+    }
+  };
+  const show = key => { ui.filter = key; render(); root.querySelector(`[data-filter="${key}"]`)?.focus(); };
+  const filters = [['all','全部模块',report.rows.length], ...['fault','pending','ready','off'].map(k => [k,names[k],report.counts[k]])];
+  const rows = report.rows.filter(r => filter === 'all' || r.state === filter);
+  return el('section', {class:'inspection', 'aria-label':'全模块巡检'},
+    el('div',{class:'inspection-kicker'}, el('span',{},'运行中心'), el('span',{},'快照 · ',timeText(report.sampledAt))),
+    el('div',{class:'inspection-heading'}, el('div',{},el('h1',{},'全模块巡检'),el('p',{},'先处理异常，再检查已启用但尚未验证的模块。')),
+      button('刷新巡检',load,{icon:'refresh'})),
+    el('div',{class:'inspection-totals','aria-label':'按运行状态筛选'},filters.map(([key,label,count]) => el('button',{type:'button',dataset:{filter:key},'aria-pressed':String(key===filter),onclick:()=>show(key)},el('span',{},label),el('strong',{},count)))),
+    el('div',{class:'inspection-list'},el('header',{},el('h2',{},filter === 'all'?'模块清单':names[filter]),el('small',{},'异常优先 · '+rows.length+' 项')),
+      rows.length ? rows.map(r => el('article',{class:'inspection-row',dataset:{state:r.state,moduleId:r.id,group:r.group}},
+        el('div',{class:'inspection-name'},el('small',{},r.group),el('strong',{},r.name)),
+        el('div',{class:'inspection-result'},el('span',{class:'inspection-badge'},names[r.state]),el('p',{},r.reason)),
+        el('div',{class:'inspection-action'},el('small',{},r.enabled?'开关：开':'开关：关'),el('button',{type:'button','aria-label':'查看'+r.name+'设置',onclick:()=>goTo(r)},'查看设置 ›')))) : el('p',{class:'inspection-empty'},'当前没有「'+names[filter]+'」的模块。')),
+    el('p',{class:'inspection-note'},'巡检只读，不触发登录、模型调用或消息发送。已加载不等于真实收发通过。'));
+}
+
 function viewContent() {
   switch (state.view) {
+    case 'overview': return dashboardView();
+    case 'health': return healthView();
     case 'connection': return connectionView();
     case 'chat': return chatView();
     case 'listen': return listenView();
@@ -984,6 +1119,15 @@ async function showEmotionStatus() {
   } catch (error) { if (error.message !== '请重新登录') toast(formatError(error), true); }
 }
 
+async function showOfficialStatus() {
+  try {
+    const data = await secureApi('pluginPageData', {id:'qq-official-bot'});
+    openModal('官方机器人状态', '凭据和扫码绑定仅在 DSH → QQ 框架 → 插件 → QQ 官方机器人设置中管理。',
+      el('dl', {class:'kv'}, (data.rows || []).map(row => [el('dt', {}, row.key), el('dd', {}, row.value)])),
+      [button('关闭', closeModal, {ghost:true})]);
+  } catch (error) { if (error.message !== '请重新登录') toast(formatError(error), true); }
+}
+
 function pluginCard(item, kind) {
   const manifest = item.manifest || {};
   const id = item.id || manifest.id;
@@ -1010,11 +1154,12 @@ function pluginCard(item, kind) {
       toggle('启用', enabled, value => { enabled = value; }),
       button('保存', save, { small: true })));
   const body = el('div', { class: 'pkg-body' },
+    id === 'qq-official-bot' ? el('div',{}, el('p',{class:'pkg-note'},'凭据和扫码绑定请前往 DSH → QQ 框架 → 插件 → QQ 官方机器人。'),button('查看官方机器人状态',showOfficialStatus,{ghost:true,small:true})) : null,
     id === 'qq-emotion' ? button('查看心情与分享记录', showEmotionStatus, {ghost: true, small: true}) : null,
     el('details', {}, el('summary', {}, '作用范围'), scope.node),
     Object.keys(manifest.configSchema || {}).length ? el('details', {}, el('summary', {}, '插件设置'), config.node) : null,
     el('p', { class: 'pkg-note' }, '保存后会重新加载该插件'));
-  return el('div', { class: 'pkg' }, head, kind === 'builtin' ? null : body);
+  return el('div', {class:'pkg',tabindex:-1,dataset:{packageKind:kind,packageId:id}}, head, kind === 'builtin' ? null : body);
 }
 
 function pluginsView() {
@@ -1068,7 +1213,7 @@ function accountView() {
   let current = '', next = '', confirm = '';
   const form = el('div', { class: 'form-grid' },
     field('当前密码', textInput('', value => { current = value; }, { type: 'password', autocomplete: 'current-password' })),
-    field('新密码', textInput('', value => { next = value; }, { type: 'password', autocomplete: 'new-password', placeholder: '至少 10 位' })),
+    field('新密码', textInput('', value => { next = value; }, { type: 'password', autocomplete: 'new-password', placeholder: '至少 15 位' })),
     field('确认新密码', textInput('', value => { confirm = value; }, { type: 'password', autocomplete: 'new-password' })));
   const change = async () => {
     if (next !== confirm) { toast('两次输入的新密码不一致', true); return; }
@@ -1077,17 +1222,15 @@ function accountView() {
       const result = await json.json();
       if (!json.ok || result.ok === false) throw new Error(result.error || '修改失败');
       state.csrf = result.csrf;
-      toast('密码已更新，其他会话已退出');
+      render(); toast('密码已更新，其他会话已退出');
     } catch (error) { toast(error.message, true); }
   };
-  return el('div', { class: 'grid', style: 'gap:18px' },
+  return [pageHeader('安全', '在这里更换登录密码。绑定或更换认证器请前往 DSH 网页安全。', [pill(state.data.adminConsole?.secure?'HTTPS 受控代理':'本机访问','ok')]),
+    el('div', { class: 'grid', style: 'gap:18px' },
     card('修改管理密码', '修改后所有旧会话立即失效，需要在其他设备重新登录。密码使用 scrypt 哈希保存在 data/dsh-onebot-bridge/admin/admin.json。', form,
-      savebar('新密码至少 10 位，不能是常见弱密码', change, '更新密码')),
-    card('会话与访问', '管理站点只监听 127.0.0.1，使用 HttpOnly + SameSite=Strict Cookie；会话 12 小时绝对过期、30 分钟无操作过期。', el('div', { class: 'grid two' },
-      stat('监听地址', '127.0.0.1:3097'),
-      stat('传输', 'HTTP（本机）', '远程访问请自行加 HTTPS 反向代理'),
-      stat('登录限速', '5 次 / 15 分钟'),
-      stat('请求保护', 'CSRF + Origin + Host 校验'))));
+      savebar('新密码至少 15 位，不能是常见弱密码', change, '更新密码')),
+    card('登录保护',state.data.adminConsole?.secure?'HTTPS 模式强制二次验证。':'默认仅回环访问；绑定后，每次登录均需二次验证。',
+      el('p',{},state.data.adminConsole?.auth?.enrolled?'认证器已绑定':'尚未绑定认证器'),el('small',{},'首次设密、重绑认证器和撤销全部会话：DSH 设置 → QQ 框架 → 网页安全。')))];
 }
 
 /* ============================================================
@@ -2667,6 +2810,7 @@ pageLoaders.autonomy = async () => {
   return {overview, diaries, activities, time};
 };
 
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopMonitorRefresh(); else if (state.view === DEFAULT_VIEW) void refreshDashboard(); });
 window.addEventListener('beforeunload', event => {
   if (!state.ui?.autonomy?.dirty) return;
   event.preventDefault();
@@ -2689,9 +2833,11 @@ boot().then(() => {}).catch(error => {
 });
 
 async function boot() {
-  state.view = viewFromHash();
+  try { logoutPending = sessionStorage.getItem(logoutMarker)==='1'; } catch { /* storage may be disabled */ }
+  if (logoutPending) return logout();
   const session = await fetchJson('/api/session');
-  if (!session.configured) return renderAuth('setup');
+  state.access=session;
+  if (!session.configured || session.awaitingEnrollment || session.locked) return renderAuth('setup');
   if (!session.authenticated) return renderAuth('login');
   state.csrf = session.csrf;
   await load();
